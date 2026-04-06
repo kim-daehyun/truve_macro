@@ -1,30 +1,21 @@
 # Truve 매크로 데이터 수집기
 
-Truve 티켓팅 플랫폼의 **매크로 탐지 모델(BE/FE) 학습용** 봇 행동 데이터를 생성하는 도구.
+Truve 티켓팅 플로우를 자동으로 실행하면서, 매크로 탐지용 **BE / FE 학습 데이터**를 쌓기 위한 수집기입니다.
 
-**Playwright headed 모드**로 실제 브라우저가 열리고, 마우스 이동/클릭/타이핑이 화면에 보임.
-로그인 → 공연 선택 → 캡차 → 대기열 → 좌석 선택 → 결제 정보 입력 → Toss 결제까지 전체 플로우를 자동화.
+브라우저는 Playwright headed 모드로 실행되며, 실제로 브라우저 창이 열리고 로그인부터 공연 선택, 캡차, 대기열, 좌석 선택, 결제, Toss iframe 처리까지 화면에서 보입니다.
 
----
+현재 버전의 핵심은 다음 두 가지입니다.
 
-## 봇 레벨 시스템 (Level 1~10)
+- `--behavior-type bot|human` 하나로 전체 행동 성향을 제어
+- `seatmap` 단계에서 실제 `mousemove`와 클릭이 발생하도록 하여 FE raw data를 남김
 
-| Level | 이름 | 동작 딜레이 | 마우스 경로 | 타이핑 |
-|-------|------|-----------|-----------|--------|
-| 1 | 극단적 봇 | 30~80ms | 없음 | 붙여넣기 |
-| 2 | 공격적 봇 | 80~200ms | 직선 3스텝 | 5~10ms |
-| 3 | 일반 봇 | 200~500ms | 직선 5스텝 | 10~25ms |
-| 4 | 개선된 봇 | 400~900ms | 직선 8스텝 | 20~50ms |
-| 5 | 경계 단계 | 700~1500ms | 가감속 곡선 | 40~80ms |
-| 6 | 반자동 | 1~2.5초 | 베지어 곡선 | 50~120ms |
-| 7 | 스텔스 봇 | 1.5~3.5초 | 베지어 곡선 | 60~150ms |
-| 8 | 고급 스텔스 | 2~5초 | human_like | 80~200ms |
-| 9 | 거의 사람 | 3~8초 | human_like | 100~280ms |
-| 10 | 사람 시뮬 | 5~15초 | human_like+떨림 | 120~350ms+오타 |
+## 현재 버전 요약
 
-레벨 비교표 확인: `python main.py --info`
-
----
+- 예전 `--scenario`, `--level` 중심 구조는 제거되었습니다.
+- 지금은 `--behavior-type bot` 또는 `--behavior-type human`으로만 전체 흐름을 제어합니다.
+- `bot`은 더 짧은 체류시간, 적은 탐색, 높은 teleport 성향을 목표로 합니다.
+- `human`은 더 자연스러운 속도, 더 연속적인 마우스 이동, 더 긴 seatmap 체류를 목표로 합니다.
+- 좌석 수는 `--seat-count-mode random`이면 매 run마다 1~4석 랜덤으로 선택됩니다.
 
 ## 설치
 
@@ -35,13 +26,15 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
-## 설정
+## 환경 설정
 
-`.env.example`을 `.env`로 복사 후 편집:
+`.env.example`을 `.env`로 복사해 사용하시면 됩니다.
 
 ```bash
 cp .env.example .env
 ```
+
+예시:
 
 ```env
 TRUVE_BASE_URL=https://front-nu-tawny.vercel.app
@@ -50,289 +43,246 @@ TRUVE_SHOW_ID=1
 TRUVE_SCHEDULE_ID=1
 ```
 
-또는 CLI에서 직접 계정 지정:
+또는 CLI에서 직접 계정을 넣을 수 있습니다.
 
 ```bash
-python main.py --email your@email.com --password yourpass
+python main.py --email your@email.com --password 'yourpass'
 ```
 
----
+주의:
+
+- `--password`는 프로세스 목록에 노출될 수 있으니 `.env` 사용을 권장합니다.
 
 ## 실행 예시
 
-### 시나리오 프리셋 (권장)
+봇형 데이터 20회:
 
 ```bash
-# 터보 (겁나 빠름, 봇 데이터 대량 수집)
-python main.py --scenario turbo
-
-# 봇 데이터 수집 (Lv1~3, 각 5회)
-python main.py --scenario bot
-
-# 실전 매크로 (사람처럼 보이되 핵심은 빠르게)
-python main.py --scenario stealth
-
-# 시나리오 + 옵션 조합
-python main.py --scenario turbo --runs 20 --tag "turbo-batch-01"
-python main.py --scenario bot --runs 10 --seat-grade VIP --pay-method VIRTUAL_ACCOUNT --bank 신한
-python main.py --scenario stealth --seat-count 4 --seat-section 1F-B
+python main.py --behavior-type bot --behavior-runs 20
 ```
 
-| | `turbo` | `bot` | `stealth` |
-|---|---|---|---|
-| 목적 | 봇 데이터 대량 수집 | 탐지 모델 학습 | 실전 예매 / 탐지 회피 |
-| 레벨 | Lv.1 | Lv.1, 2, 3 | Lv.7 |
-| 동작 딜레이 | 10~30ms | 30~500ms | 300~800ms |
-| 대기열 | 50ms 폴링 | 100ms 폴링 | 500ms 폴링 |
-| 좌석 | 즉시 (0ms) | 즉시 (10ms) | 즉시 (100ms) |
-| 마우스 | 안 움직임 | 없음/직선 | 베지어 곡선 |
-| 타이핑 | 붙여넣기 | 붙여넣기/초고속 | 40~80ms |
-| webdriver | 노출 | 노출 | 은닉 |
-| 재시도 | 20회 | 10회 | 3회 |
-| 기본 runs | 10회 | 5회/레벨 | 1회 |
-
-### 기본 실행 (레벨 직접 지정)
+사람형 데이터 10회:
 
 ```bash
-# Level 1 봇으로 1회
-python main.py --level 1 --runs 1
-
-# Level 5 경계 단계 3회
-python main.py --level 5 --runs 3
-
-# 전 레벨(1~10) 각 2회씩 전체 데이터셋 생성
-python main.py --level all --runs 2
-
-# 특정 범위만 (Level 1~5)
-python main.py --level 1-5 --runs 3
+python main.py --behavior-type human --behavior-runs 10
 ```
 
-### 좌석 지정
+좌석 수를 매 run마다 1~4 랜덤으로:
 
 ```bash
-# VIP석 1층 B구역 4매
-python main.py --level 3 --seat-grade VIP --seat-section 1F-B --seat-count 4
-
-# A석 2층 아무구역 1매
-python main.py --level 5 --seat-grade A --seat-count 1
-
-# R석 오케스트라피트 2매
-python main.py --level 1 --seat-grade R --seat-section OP --seat-count 2
+python main.py --behavior-type bot --behavior-runs 30 --seat-count-mode random
 ```
 
-### 회차(날짜/시간) 지정
+좌석 수를 고정 2매로:
 
 ```bash
-# 2026년 4월 15일 19시 공연
-python main.py --level 3 --schedule-date 2026-04-15 --schedule-time 19:00
-
-# 날짜만 지정 (회차는 랜덤)
-python main.py --level 1 --schedule-date 2026-04-20
-
-# 전부 랜덤 (기본값)
-python main.py --level 5 --schedule-date any --schedule-time any
-
-# any는 기본값이라 생략 가능
-python main.py --level 5
+python main.py --behavior-type human --behavior-runs 5 --seat-count-mode fixed --seat-count 2
 ```
 
-### 카드 결제
-
-```bash
-# 삼성카드 (기본)
-python main.py --level 3 --pay-method CARD --card-company 삼성
-
-# 현대카드
-python main.py --level 5 --pay-method CARD --card-company 현대
-
-# KB국민카드
-python main.py --level 1 --pay-method CARD --card-company KB국민
-```
-
-### 무통장 입금
-
-```bash
-# 국민은행 + 소득공제
-python main.py --level 3 --pay-method VIRTUAL_ACCOUNT --bank 국민 --cash-receipt 소득공제
-
-# 신한은행 + 발급안함
-python main.py --level 1 --pay-method VIRTUAL_ACCOUNT --bank 신한 --cash-receipt 발급안함
-
-# 카카오뱅크 + 지출증빙
-python main.py --level 5 --pay-method VIRTUAL_ACCOUNT --bank 카카오뱅크 --cash-receipt 지출증빙
-```
-
-### 재시도/태그
-
-```bash
-# 재시도 20회로 설정
-python main.py --level 1 --retry 20
-
-# 태그 붙이기 (출력 데이터에 기록됨)
-python main.py --scenario bot --tag "batch-001"
-python main.py --scenario stealth --tag "test-vip" --seat-grade VIP
-```
-
-### 풀 옵션
+무통장 결제 + 현금영수증 발급안함:
 
 ```bash
 python main.py \
-  --scenario bot \
-  --level 1 \
-  --runs 3 \
-  --retry 15 \
-  --tag "vip-test-01" \
-  --show-id 2 \
-  --seat-grade VIP \
-  --seat-section 1F-B \
-  --seat-count 4 \
+  --behavior-type bot \
+  --behavior-runs 20 \
   --pay-method VIRTUAL_ACCOUNT \
-  --bank 카카오뱅크 \
-  --cash-receipt 소득공제 \
-  --schedule-date 2026-04-15 \
-  --schedule-time 19:00 \
-  --applicant-name 홍길동 \
-  --applicant-birth 19990101 \
-  --applicant-phone 01062971082
+  --bank 신한 \
+  --cash-receipt 발급안함
 ```
 
----
+카드 결제:
 
-## 전체 CLI 옵션
+```bash
+python main.py \
+  --behavior-type human \
+  --behavior-runs 5 \
+  --pay-method CARD \
+  --card-company 삼성
+```
+
+특정 회차 날짜/시간 지정:
+
+```bash
+python main.py \
+  --behavior-type human \
+  --behavior-runs 3 \
+  --schedule-date 2026-04-15 \
+  --schedule-time 19:00
+```
+
+태그 부여:
+
+```bash
+python main.py --behavior-type bot --behavior-runs 20 --tag batch-bot-001
+```
+
+## 행동 타입
+
+### `bot`
+
+- 목적: 명확한 봇형 FE/BE 패턴 생성
+- 특징: 빠른 요청, 짧은 seatmap 체류, 적은 탐색, 높은 teleport 성향
+- seatmap 체류시간 목표:
+  - 1매: 약 `180~320ms`
+  - 2매: 약 `250~420ms`
+  - 3매: 약 `320~560ms`
+  - 4매: 약 `420~800ms`
+
+### `human`
+
+- 목적: 실제 사용자에 가까운 자연스러운 FE/BE 패턴 생성
+- 특징: 더 자연스러운 타이핑, 연속적인 마우스 이동, 더 긴 seatmap 체류
+- seatmap 체류시간 목표:
+  - 1매: 약 `1000~1850ms`
+  - 2매: 약 `1500~2700ms`
+  - 3매: 약 `2050~3600ms`
+  - 4매: 약 `2700~4700ms`
+
+행동 타입 비교표는 아래 명령으로 확인할 수 있습니다.
+
+```bash
+python main.py --info
+```
+
+## 주요 CLI 옵션
 
 ### 기본 옵션
 
 | 옵션 | 설명 | 기본값 |
-|------|------|-------|
-| `--scenario` | 시나리오 프리셋 (`bot`, `stealth`) | 없음 (수동) |
-| `--level` | 봇 레벨 (1~10, `all`, `1-5`) | `1` |
-| `--runs` | 레벨당 반복 횟수 (1~100) | `1` |
-| `--retry` | 실패 시 재시도 횟수 | 레벨 기본값 |
-| `--tag` | 데이터에 붙일 커스텀 태그 | 없음 |
-| `--url` | 대상 프론트엔드 URL | `.env` 값 |
-| `--show-id` | 대상 공연 ID | `1` |
-| `--schedule-id` | 대상 회차 ID | `1` |
+|---|---|---|
+| `--behavior-type` | 행동 라벨 (`bot`, `human`) | `bot` |
+| `--behavior-runs` | 행동 타입 기준 반복 횟수 | 없음 |
+| `--runs` | 반복 횟수 (`--behavior-runs` 미지정 시 사용) | `1` |
+| `--retry` | 실패 시 재시도 횟수 override | behavior 기본값 |
+| `--tag` | 출력 데이터에 기록할 태그 | 없음 |
+| `--url` | 대상 URL | `.env` 또는 기본 URL |
+| `--show-id` | 공연 ID | `1` |
+| `--schedule-id` | 회차 ID | `1` |
 | `--email` | 로그인 이메일 | `.env` 값 |
 | `--password` | 로그인 비밀번호 | `.env` 값 |
 | `--output` | 출력 디렉토리 | `./output` |
-| `--info` | 레벨 비교표 출력 후 종료 | - |
+| `--info` | 현재 행동 타입 비교표 출력 후 종료 | off |
 
 ### 예약자 정보
 
 | 옵션 | 설명 | 기본값 |
-|------|------|-------|
+|---|---|---|
 | `--applicant-name` | 예약자 이름 | `테스트봇` |
-| `--applicant-birth` | 생년월일 (YYYYMMDD) | `20000101` |
-| `--applicant-phone` | 전화번호 (- 제외 11자리) | `01062971082` |
+| `--applicant-birth` | 생년월일 (`YYYYMMDD`) | `20000101` |
+| `--applicant-phone` | 전화번호 | `01062971082` |
 
-### 좌석 설정
+### 좌석 옵션
 
-| 옵션 | 값 | 기본값 |
-|------|-----|-------|
+| 옵션 | 설명 | 기본값 |
+|---|---|---|
 | `--seat-grade` | `VIP`, `R`, `S`, `A`, `any` | `any` |
-| `--seat-section` | `OP`, `1F-A`, `1F-B`, `1F-C`, `2F-A`, `2F-B`, `2F-C`, `any` | `any` |
-| `--seat-count` | 1~4 | `2` |
+| `--seat-section` | 좌석 구역 문자열 | `any` |
+| `--seat-count` | 고정 좌석 수 1~4 | `2` |
+| `--seat-count-mode` | `random` 또는 `fixed` | `random` |
 
-### 회차 설정
+### 결제 옵션
 
-| 옵션 | 형식 | 기본값 |
-|------|------|-------|
-| `--schedule-date` | `YYYY-MM-DD` 또는 `any` | `any` (랜덤) |
-| `--schedule-time` | `HH:MM` 또는 `any` | `any` (랜덤) |
+| 옵션 | 설명 | 기본값 |
+|---|---|---|
+| `--pay-method` | `CARD`, `VIRTUAL_ACCOUNT` | `VIRTUAL_ACCOUNT` |
+| `--card-company` | 카드사 | `삼성` |
+| `--bank` | 무통장 입금 은행 | `신한` |
+| `--cash-receipt` | `소득공제`, `지출증빙`, `발급안함` | `발급안함` |
 
-### 결제 설정
+### 회차 옵션
 
-| 옵션 | 값 | 기본값 |
-|------|-----|-------|
-| `--pay-method` | `CARD`, `VIRTUAL_ACCOUNT` | `CARD` |
-| `--card-company` | 삼성, 현대, KB국민, 신한, 롯데, 하나, 우리, BC, NH농협 | `삼성` |
-| `--bank` | 국민, 신한, 우리, 하나, 농협, 기업, SC제일, 카카오뱅크, 토스뱅크, 케이뱅크 | `국민` |
-| `--cash-receipt` | `소득공제`, `지출증빙`, `발급안함` | `소득공제` |
+| 옵션 | 설명 | 기본값 |
+|---|---|---|
+| `--schedule-date` | `YYYY-MM-DD` 또는 `any` | `any` |
+| `--schedule-time` | `HH:MM` 또는 `any` | `any` |
 
----
+## 현재 자동화 플로우
 
-## 자동화 플로우
-
-매크로가 실행하는 전체 순서:
-
-```
-1. 로그인 완료 (/signin)
-   └ 이메일/비밀번호 입력 → 로그인 버튼
-
-2. 공연 상세 → 날짜/회차 선택 (/shows/{showId})
-   └ 날짜 선택 (--schedule-date, any=랜덤)
-   └ 회차 선택 (--schedule-time, any=랜덤)
-
-3. 예매하기 → 캡차 통과
-   └ 예매하기 버튼 → 캡차 타일 선택 → 시작하기
-
-4. 대기열 진입 → 폴링 → 입장
-   └ queue/enter → queue/status 폴링 → admissionToken 획득
-
-5. 세션 진입 → 좌석 선점/재시도 (/shows/{showId}/seat)
-   └ DOM 기반 좌석 선택 (SVG circle 요소 JS 클릭)
-   └ 등급별 색상: VIP=보라, R=녹, S=파랑, A=노랑
-   └ 예매됨(회색) 자동 제외, available 좌석만 클릭
-
-6. Booking 생성 + 결제 페이지 이동 (/payments)
-   └ "결제하기" 버튼 → URL /payments 도달 확인
-
-7. Payment-ready + 예약자 정보 입력
-   ├ 이름/생년월일/이메일/전화번호 (JS nativeInputValueSetter 폴백)
-   ├ 수령방법: 현장수령
-   ├ 결제수단: 카드 또는 무통장 선택
-   ├ 약관 동의 (Lv1~5: 전체 / Lv6~10: 개별)
-   └ "총 N원 결제하기" 클릭
-
-8. Toss Payments SDK 결제 처리
-   ├ [카드] 카드사 선택 (--card-company) → 결제
-   └ [무통장] 은행 선택 (--bank) → 입금자명 입력
-              → 현금영수증 (--cash-receipt: 소득공제/지출증빙/발급안함)
-              → 소득공제 시 휴대폰번호 자동 입력 → 결제
+```text
+1. 로그인 확인
+2. 공연 상세 페이지 이동
+3. 날짜 / 회차 선택
+4. 예매하기 + 캡차
+5. 대기열 통과
+6. seatmap 좌석 선택
+7. 결제 페이지 진입
+8. 예약자 정보 / 수령방법 / 결제수단 입력
+9. Toss iframe 처리
+10. 결과 저장
 ```
 
----
+## 저장되는 데이터
 
-## 출력 데이터
+현재 버전은 로컬 CSV/JSON 출력 기준으로 아래 데이터를 저장합니다.
 
-`./output/` 디렉토리에 생성:
+### BE 쪽
 
-| 파일 | 용도 |
-|------|------|
-| `be_rawdata_*.csv` | BE 모델 학습 (요청 타이밍, 재시도, 좌석 선택 패턴 등) |
-| `fe_rawdata_*.csv` | FE 모델 학습 (마우스, 키보드, 스크롤, 브라우저 핑거프린트 등) |
-| `combined_rawdata_*.json` | 통합 데이터 (BE + FE + 요청 로그) |
+- `req_intervals_ms`
+- `req_interval_mean_ms`
+- `req_interval_std_ms`
+- `queue_poll_intervals_ms`
+- `queue_poll_count`
+- `retry_count`
+- `retry_intervals_ms`
+- `api_call_sequence`
+- `seat_view_to_hold_ms`
+- `seat_hold_attempts`
+- `selected_seat_ids`
+- `behavior_type`
+- `is_bot`
 
-라벨 컬럼:
-- `is_bot=1` (봇)
-- `level`: 봇 레벨 (1~10)
-- `scenario`: bot / stealth / manual
-- `tag`: 커스텀 태그 (`--tag`로 지정)
-- `bot_profile`: `level_N` 형식
+### FE 쪽
 
-사람 데이터(`is_bot=0`)는 실제 사용자 로그에서 별도 수집 필요
+- 브라우저 fingerprint
+- 전체 `mouse_move_count`, `click_count`, `keystroke_count`
+- seatmap stage raw telemetry
+  - `seatmap_session_id`
+  - `seatmap_user_id`
+  - `seatmap_event_type`
+  - `seatmap_page_enter_ts`
+  - `seatmap_page_leave_ts`
+  - `seatmap_duration_ms`
+  - `seatmap_mousemove_events`
+  - `seatmap_mousemove_count`
+  - `seatmap_click_count`
+  - `seatmap_viewport_width`
+  - `seatmap_viewport_height`
+  - `seatmap_mouse_activity_rate`
+  - `seatmap_mouse_teleport_count`
+  - `seatmap_mouse_teleport_rate`
 
----
+## 출력 파일
 
-## 프로젝트 구조
+실행이 끝나면 `--output` 디렉토리에 CSV/JSON 파일이 저장됩니다.
 
+예시:
+
+- `be_rawdata_YYYYMMDD_HHMMSS.csv`
+- `fe_rawdata_YYYYMMDD_HHMMSS.csv`
+- `request_log_YYYYMMDD_HHMMSS.json`
+
+## 현재 버전에서 보는 포인트
+
+- FE 모델:
+  seatmap에서 실제 `mousemove`와 click이 발생하는지
+- BE 모델:
+  요청 간격이 너무 고정되지 않고, run마다 분산이 있는지
+- bot / human 분리:
+  `seatmap_duration_ms`, `seatmap_mouse_activity_rate`, `seatmap_mouse_teleport_rate` 차이가 충분한지
+
+## 검증
+
+문법 검증:
+
+```bash
+python3 -m py_compile browser_macro.py main.py config.py data_logger.py api_macro.py
 ```
-├── config.py           # 10단계 봇 프로필 + 환경변수 로더 + 입력 검증
-├── browser_macro.py    # Playwright headed 매크로 (Toss SDK 포함)
-├── api_macro.py        # BE 전용 API 직접호출 매크로 (보조)
-├── data_logger.py      # BE/FE rawdata 수집 → CSV/JSON
-├── main.py             # CLI 엔트리포인트
-├── requirements.txt    # 의존성 (버전 고정)
-├── .env.example        # 환경변수 템플릿
-└── .gitignore          # .env, output/ 제외
+
+## 커밋 예시
+
+```bash
+git status
+git add README.md main.py browser_macro.py data_logger.py
+git commit -m "Refresh README for behavior-type based macro flow"
+git push origin main_daehyun
 ```
-
-## 보안 사항
-
-- 크리덴셜은 `.env` 환경변수에서만 로드 (소스코드 내 하드코딩 금지)
-- 콘솔 로그에 이메일 마스킹, 비밀번호 미출력
-- 출력 파일에 Authorization 등 민감 헤더 자동 제거
-- URL 입력값 HTTPS 강제, 내부 네트워크 주소 차단
-- 출력 파일 경로 탐색 방어
-- 파일 퍼미션 owner-only (0o600)
-- 의존성 버전 고정 (공급망 공격 방어)

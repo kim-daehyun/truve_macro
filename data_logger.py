@@ -15,6 +15,7 @@ import re
 import stat
 import time
 import statistics
+import math
 from datetime import datetime
 from dataclasses import dataclass, field, asdict
 
@@ -56,6 +57,42 @@ def _validate_output_path(output_dir: str) -> str:
         raise ValueError(f"허용되지 않은 문자 포함: {output_dir}")
 
     return normalized
+
+
+def _compute_stage_mouse_features(events: list, viewport_width: int, viewport_height: int,
+                                  duration_ms: int) -> tuple[float, int, float]:
+    """
+    stage mousemove raw event로 activity/teleport 지표를 계산한다.
+    teleport 기준:
+      - dt < 20ms and norm_dist > 0.12
+      - or norm_speed > 0.006
+    """
+    if not events or duration_ms <= 0:
+        return 0.0, 0, 0.0
+
+    activity_rate = len(events) / (duration_ms / 1000.0)
+
+    if viewport_width <= 0 or viewport_height <= 0 or len(events) < 2:
+        return activity_rate, 0, 0.0
+
+    teleport_count = 0
+    for prev, curr in zip(events, events[1:]):
+        dt = (curr.get("timestamp", 0) or 0) - (prev.get("timestamp", 0) or 0)
+        if dt <= 0:
+            continue
+
+        dx = (curr.get("x", 0) or 0) - (prev.get("x", 0) or 0)
+        dy = (curr.get("y", 0) or 0) - (prev.get("y", 0) or 0)
+        norm_dx = dx / viewport_width
+        norm_dy = dy / viewport_height
+        norm_dist = math.sqrt(norm_dx ** 2 + norm_dy ** 2)
+        norm_speed = norm_dist / dt
+
+        if (dt < 20 and norm_dist > 0.12) or (norm_speed > 0.006):
+            teleport_count += 1
+
+    teleport_rate = teleport_count / len(events) if events else 0.0
+    return activity_rate, teleport_count, teleport_rate
 
 
 @dataclass
@@ -190,8 +227,12 @@ class FEDataRecord:
     seatmap_duration_ms: int = 0
     seatmap_mousemove_events: list = field(default_factory=list)
     seatmap_mousemove_count: int = 0
+    seatmap_click_count: int = 0
     seatmap_viewport_width: int = 0
     seatmap_viewport_height: int = 0
+    seatmap_mouse_activity_rate: float = 0.0
+    seatmap_mouse_teleport_count: int = 0
+    seatmap_mouse_teleport_rate: float = 0.0
 
     def compute_stats(self):
         if len(self.click_intervals_ms) > 0:
@@ -204,6 +245,15 @@ class FEDataRecord:
             self.seatmap_duration_ms = self.seatmap_page_leave_ts - self.seatmap_page_enter_ts
         if self.seatmap_mousemove_events and not self.seatmap_mousemove_count:
             self.seatmap_mousemove_count = len(self.seatmap_mousemove_events)
+        activity_rate, teleport_count, teleport_rate = _compute_stage_mouse_features(
+            self.seatmap_mousemove_events,
+            self.seatmap_viewport_width,
+            self.seatmap_viewport_height,
+            self.seatmap_duration_ms,
+        )
+        self.seatmap_mouse_activity_rate = activity_rate
+        self.seatmap_mouse_teleport_count = teleport_count
+        self.seatmap_mouse_teleport_rate = teleport_rate
 
 
 class DataLogger:

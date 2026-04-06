@@ -55,11 +55,12 @@ class MouseController:
         if force_real_move:
             profile = self.cfg.get("seatmap_force_move_profile", {})
             distance = math.sqrt((target_x - self.current_x) ** 2 + (target_y - self.current_y) ** 2)
+            min_steps = profile.get("min_steps", 10)
             divisor_range = profile.get("distance_divisor_range", (22.0, 34.0))
             divisor = random.uniform(divisor_range[0], divisor_range[1])
-            distance_steps = max(10, int(distance / divisor))
+            distance_steps = max(min_steps, int(distance / divisor))
             steps_range = profile.get("steps_range", (16, 26))
-            steps = max(distance_steps, random.randint(steps_range[0], steps_range[1]))
+            steps = max(min_steps, distance_steps, random.randint(steps_range[0], steps_range[1]))
             speed_range = profile.get("speed_ms_range", (4.0, 8.0))
             speed_ms = max(speed_ms, random.uniform(speed_range[0], speed_range[1]))
             curve_choices = profile.get("curve_choices", ["bezier", "ease_in_out"])
@@ -243,37 +244,60 @@ class TruveMacro:
         self._telemetry_user_id = "anonymous"
         self._seatmap_stage_started = False
         self._seatmap_stage_captured = False
+        self._timing_scale = random.uniform(0.92, 1.08) if behavior_type == "human" else random.uniform(0.85, 1.05)
         self.cfg["seatmap_force_move_profile"] = self._build_seatmap_force_move_profile()
 
     def _build_seatmap_force_move_profile(self) -> dict:
         """seatmap 전용 실제 마우스 이동 프로필. run마다 약간 다르게 뽑는다."""
-        if self.scenario == "turbo" or self.level <= 3:
+        if self.behavior_type == "bot":
             return {
-                "steps_range": (14, 22),
-                "speed_ms_range": (3.5, 6.5),
-                "jitter_range": (0.7, 1.4),
-                "distance_divisor_range": (26.0, 40.0),
-                "curve_choices": ["bezier", "ease_in_out"],
-                "scout_points_range": (2, 3),
-                "scout_pause_ms_range": (10.0, 22.0),
-                "hover_ms_range": (14.0, 35.0),
-                "press_ms_range": (8.0, 20.0),
-                "scout_spread_x_ratio_range": (0.04, 0.065),
-                "scout_spread_y_ratio_range": (0.03, 0.055),
+                "min_steps": 4,
+                "steps_range": (4, 8),
+                "speed_ms_range": (1.0, 2.2),
+                "jitter_range": (0.2, 0.8),
+                "distance_divisor_range": (90.0, 145.0),
+                "curve_choices": ["linear"],
+                "scout_points_range": (0, 1),
+                "scout_pause_ms_range": (0.0, 4.0),
+                "hover_ms_range": (2.0, 8.0),
+                "press_ms_range": (2.0, 8.0),
+                "scout_spread_x_ratio_range": (0.04, 0.08),
+                "scout_spread_y_ratio_range": (0.03, 0.07),
+                "pre_explore_ratio_range": (0.0, 0.03),
+                "explore_pause_ms_range": (0.0, 5.0),
+                "explore_anchor_bias": 0.05,
+                "post_click_verify_ms": 360,
+                "dwell_range_by_seat_count": {
+                    1: (180, 320),
+                    2: (250, 420),
+                    3: (320, 560),
+                    4: (420, 800),
+                },
             }
 
         return {
-            "steps_range": (18, 30),
-            "speed_ms_range": (5.0, 9.0),
-            "jitter_range": (1.0, 2.0),
-            "distance_divisor_range": (24.0, 36.0),
-            "curve_choices": ["bezier", "ease_in_out", "human_like"],
-            "scout_points_range": (3, 4),
-            "scout_pause_ms_range": (18.0, 40.0),
-            "hover_ms_range": (20.0, 55.0),
-            "press_ms_range": (10.0, 26.0),
-            "scout_spread_x_ratio_range": (0.05, 0.08),
-            "scout_spread_y_ratio_range": (0.04, 0.065),
+            "min_steps": 20,
+            "steps_range": (20, 32),
+            "speed_ms_range": (3.1, 5.6),
+            "jitter_range": (0.35, 0.85),
+            "distance_divisor_range": (22.0, 34.0),
+            "curve_choices": ["bezier", "human_like", "ease_in_out"],
+            "scout_points_range": (2, 4),
+            "scout_pause_ms_range": (8.0, 26.0),
+            "hover_ms_range": (10.0, 34.0),
+            "press_ms_range": (8.0, 20.0),
+            "scout_spread_x_ratio_range": (0.02, 0.045),
+            "scout_spread_y_ratio_range": (0.018, 0.04),
+            "pre_explore_ratio_range": (0.16, 0.34),
+            "explore_pause_ms_range": (14.0, 58.0),
+            "explore_anchor_bias": 0.55,
+            "post_click_verify_ms": 560,
+            "dwell_range_by_seat_count": {
+                1: (1000, 1850),
+                2: (1500, 2700),
+                3: (2050, 3600),
+                4: (2700, 4700),
+            },
         }
 
     # ================================================================
@@ -282,7 +306,7 @@ class TruveMacro:
 
     async def setup(self):
         """브라우저 시작 - 화면에 브라우저 창이 열림"""
-        print(f"\n  [Setup] Level {self.level}: {self.cfg['name']}")
+        print(f"\n  [Setup] {self.behavior_type} 모드: {self.cfg['name']}")
 
         self._pw = await async_playwright().start()
 
@@ -342,6 +366,8 @@ class TruveMacro:
                             page_leave_ts: 0,
                             mousemove_events: [],
                             mousemove_count: 0,
+                            clicks: [],
+                            click_count: 0,
                             viewport_width: window.innerWidth || 0,
                             viewport_height: window.innerHeight || 0,
                         };
@@ -380,6 +406,13 @@ class TruveMacro:
                     stage.mousemove_count = stage.mousemove_events.length;
                     stage.viewport_width = window.innerWidth || 0;
                     stage.viewport_height = window.innerHeight || 0;
+                },
+                recordStageClick(event) {
+                    if (!this.currentStage) return;
+                    const stage = this._ensureStage(this.currentStage);
+                    const payload = {timestamp:event.t, x:event.x, y:event.y};
+                    stage.clicks.push(payload);
+                    stage.click_count = stage.clicks.length;
                 }
             };
             document.addEventListener('mousemove', e => {
@@ -387,8 +420,11 @@ class TruveMacro:
                 window.__tel.mouse.push(payload);
                 window.__tel.recordStageMousemove(payload);
             });
-            document.addEventListener('click', e =>
-                window.__tel.clicks.push({x:e.clientX,y:e.clientY,t:Date.now()}));
+            document.addEventListener('click', e => {
+                const payload = {x:e.clientX,y:e.clientY,t:Date.now()};
+                window.__tel.clicks.push(payload);
+                window.__tel.recordStageClick(payload);
+            });
             document.addEventListener('keydown', e =>
                 window.__tel.keys.push({k:e.key,t:Date.now(),d:'dn'}));
             document.addEventListener('keyup', e =>
@@ -430,7 +466,7 @@ class TruveMacro:
             self._be.req_intervals_ms.append(round(now - self._last_action, 2))
         self._last_action = now
 
-        await asyncio.sleep(delay / 1000.0)
+        await asyncio.sleep((delay * self._timing_scale) / 1000.0)
 
     async def _dismiss_popups(self):
         """
@@ -486,7 +522,7 @@ class TruveMacro:
             }""")
 
             if result == "closed":
-                await asyncio.sleep(0.5)
+                await self._sleep_ms(260, 520)
                 print(f"      [팝업] 공연안내 닫기 완료")
                 return True
 
@@ -508,7 +544,7 @@ class TruveMacro:
 
             # 요소가 뷰포트에 보이도록 스크롤
             await el.scroll_into_view_if_needed()
-            await asyncio.sleep(0.2)
+            await self._sleep_ms(80, 180)
 
             box = await el.bounding_box()
             if box:
@@ -537,11 +573,11 @@ class TruveMacro:
         """레벨별 스크롤"""
         if not self.cfg["scroll_enabled"]:
             return
-        await asyncio.sleep(self.cfg["scroll_delay_ms"] / 1000.0)
+        await self._sleep_ms(self.cfg["scroll_delay_ms"] * 0.75, self.cfg["scroll_delay_ms"] * 1.25)
         amount = random.randint(200, 500)
         await self.page.evaluate(f"window.scrollBy(0, {amount})")
         if self.level >= 8 and random.random() < 0.3:
-            await asyncio.sleep(0.5)
+            await self._sleep_ms(180, 420)
             await self.page.evaluate(f"window.scrollBy(0, -{amount // 2})")
 
     async def _start_stage_telemetry(self, event_type: str):
@@ -585,8 +621,69 @@ class TruveMacro:
             self._fe.seatmap_page_leave_ts = data.get("page_leave_ts", 0) or 0
             self._fe.seatmap_mousemove_events = data.get("mousemove_events", []) or []
             self._fe.seatmap_mousemove_count = data.get("mousemove_count", 0) or 0
+            self._fe.seatmap_click_count = data.get("click_count", 0) or 0
             self._fe.seatmap_viewport_width = data.get("viewport_width", 0) or 0
             self._fe.seatmap_viewport_height = data.get("viewport_height", 0) or 0
+
+    async def _sleep_ms(self, min_ms: float, max_ms: float | None = None):
+        """per-run timing scale을 적용한 짧은 대기."""
+        if max_ms is None:
+            max_ms = min_ms
+        delay_ms = random.uniform(min_ms, max_ms) * self._timing_scale
+        await asyncio.sleep(max(0.0, delay_ms) / 1000.0)
+
+    async def _get_seatmap_box(self):
+        """seatmap에서 탐색/클릭에 사용할 기준 영역을 반환."""
+        canvas = await self.page.query_selector('canvas')
+        if canvas:
+            box = await canvas.bounding_box()
+            if box:
+                return box
+        return await self.page.evaluate("""() => {
+            const main = document.querySelector('main') || document.body;
+            const r = main.getBoundingClientRect();
+            return {x: r.x, y: r.y, width: r.width, height: r.height};
+        }""")
+
+    def _compute_seatmap_target_duration_ms(self, seat_count: int) -> int:
+        """행동 타입/좌석 수 기준 seatmap 목표 체류시간."""
+        profile = self.cfg.get("seatmap_force_move_profile", {})
+        ranges = profile.get("dwell_range_by_seat_count", {})
+        low, high = ranges.get(seat_count, ranges.get(4, (1500, 2500)))
+        return random.randint(low, high)
+
+    async def _seatmap_explore(self, box: dict, duration_ms: float, anchor_points: list | None = None):
+        """seatmap에서 목표 체류시간을 채우기 위한 탐색 움직임."""
+        if not box or duration_ms <= 0:
+            return
+
+        profile = self.cfg.get("seatmap_force_move_profile", {})
+        pause_range = profile.get("explore_pause_ms_range", (20.0, 80.0))
+        anchor_bias = profile.get("explore_anchor_bias", 0.5)
+        end_time = time.time() + (duration_ms / 1000.0)
+        cx, cy = box["x"], box["y"]
+        cw, ch = box["width"], box["height"]
+
+        while time.time() < end_time:
+            use_anchor = anchor_points and random.random() < anchor_bias
+            if use_anchor:
+                anchor_x, anchor_y = random.choice(anchor_points)
+                target_x = min(max(anchor_x + random.uniform(-cw * 0.04, cw * 0.04), cx), cx + cw)
+                target_y = min(max(anchor_y + random.uniform(-ch * 0.035, ch * 0.035), cy), cy + ch)
+            else:
+                if self.behavior_type == "bot":
+                    target_x = cx + cw * random.uniform(0.18, 0.82)
+                    target_y = cy + ch * random.uniform(0.14, 0.58)
+                else:
+                    target_x = cx + cw * random.uniform(0.12, 0.88)
+                    target_y = cy + ch * random.uniform(0.10, 0.62)
+
+            await self.mouse.move_to(target_x, target_y, force_real_move=True)
+            remaining_ms = max(0.0, (end_time - time.time()) * 1000.0)
+            if remaining_ms <= 0:
+                break
+            pause_ms = min(remaining_ms, random.uniform(pause_range[0], pause_range[1]))
+            await asyncio.sleep(pause_ms / 1000.0)
 
     # ================================================================
     # Step 1: 로그인 (/signin)
@@ -603,7 +700,7 @@ class TruveMacro:
 
         # 먼저 메인 페이지로 이동해서 로그인 상태 확인
         await self.page.goto(f"{self.base_url}/", wait_until="networkidle")
-        await asyncio.sleep(1)
+        await self._sleep_ms(420, 900)
 
         # 상단에 "로그인" 텍스트/버튼이 있는지 확인
         login_btn = await self.page.query_selector(
@@ -636,7 +733,7 @@ class TruveMacro:
         )
 
         await self.page.wait_for_load_state("networkidle")
-        await asyncio.sleep(1)
+        await self._sleep_ms(420, 900)
         print(f"      -> 로그인 완료")
         self._be.login_method = "email"
 
@@ -663,7 +760,10 @@ class TruveMacro:
         # 사람 시뮬: 공연 정보 둘러보기
         if self.level >= 7:
             await self._scroll()
-            await asyncio.sleep(random.uniform(1, 3))
+            if self.behavior_type == "human":
+                await asyncio.sleep(random.uniform(0.25, 0.8))
+            else:
+                await asyncio.sleep(random.uniform(1, 3))
             await self._scroll()
 
         # ── 회차 날짜 선택 ──
@@ -680,7 +780,7 @@ class TruveMacro:
                     box = await date_btn.bounding_box()
                     if box:
                         await self.mouse.click_at(box["x"] + box["width"]/2, box["y"] + box["height"]/2)
-                        await asyncio.sleep(0.5)
+                        await self._sleep_ms(220, 420)
                 else:
                     print(f"      [!] 날짜 {day}일 못찾음, 기본 유지")
             except Exception:
@@ -705,7 +805,7 @@ class TruveMacro:
                     box = await time_btn.bounding_box()
                     if box:
                         await self.mouse.click_at(box["x"] + box["width"]/2, box["y"] + box["height"]/2)
-                        await asyncio.sleep(0.5)
+                        await self._sleep_ms(220, 420)
                 else:
                     print(f"      [!] {target_time} 회차 못찾음, 가용 회차 탐색")
                     await self._select_available_schedule()
@@ -944,10 +1044,10 @@ class TruveMacro:
             if self.cfg["queue_ignore_server_interval"]:
                 p_min, p_max = self.cfg["queue_poll_ms"]
                 wait = random.uniform(p_min, p_max)
+                await asyncio.sleep(wait / 1000.0)
             else:
-                wait = 3000  # 서버 기본값 사용
-
-            await asyncio.sleep(wait / 1000.0)
+                # 서버 권장값을 따르되 매 run마다 조금씩 흔들어 일률성을 줄인다.
+                await self._sleep_ms(2600, 3450)
 
         self._be.queue_poll_count = poll_count
         print(f"      -> 대기열 타임아웃")
@@ -975,20 +1075,26 @@ class TruveMacro:
             )
 
         await self.page.wait_for_load_state("networkidle")
-        await asyncio.sleep(2)
+        if self.behavior_type == "bot":
+            await self._sleep_ms(320, 650)
+        else:
+            await self._sleep_ms(520, 980)
 
         if not self._seatmap_stage_started:
             await self._start_stage_telemetry("seatmap")
             self._seatmap_stage_started = True
 
+        seatmap_box = await self._get_seatmap_box()
         seat_view_start = time.time()
-
-        d_min, d_max = self.cfg["seat_select_delay_ms"]
-        think_time = random.uniform(d_min, d_max)
-        print(f"      좌석 고르는 중... ({think_time/1000:.1f}초)")
-        await asyncio.sleep(think_time / 1000.0)
-
         max_seats = self.booking.get("seat_count", 2)
+        target_duration_ms = self._compute_seatmap_target_duration_ms(max_seats)
+        pre_explore_ratio = random.uniform(
+            *self.cfg.get("seatmap_force_move_profile", {}).get("pre_explore_ratio_range", (0.1, 0.2))
+        )
+        pre_explore_ms = target_duration_ms * pre_explore_ratio
+        print(f"      좌석 고르는 중... (목표 {target_duration_ms/1000:.1f}초)")
+        await self._seatmap_explore(seatmap_box, pre_explore_ms)
+
         target_grade = self.booking.get("seat_grade", "any").lower()
 
         # ── DOM에서 좌석 요소 찾기 (JS로 available 좌석 수집) ──
@@ -1007,7 +1113,7 @@ class TruveMacro:
         if available_count == -1:
             # Canvas 기반 → Canvas 좌표 클릭
             print(f"      PixiJS Canvas 감지 → Canvas 좌표 클릭")
-            return await self._select_seats_canvas(max_seats)
+            return await self._select_seats_canvas(max_seats, seat_view_start, target_duration_ms, seatmap_box)
 
         # ── DOM 기반 좌석 선택 (실제 마우스 이동 포함) ──
         max_attempts = self.cfg.get("max_seat_attempts", 5)
@@ -1061,33 +1167,39 @@ class TruveMacro:
 
             found = len(seats) if isinstance(seats, list) else 0
             clicked = 0
+            selected_points = []
 
             if found > 0:
-                page_box = await self.page.evaluate("""() => {
-                    const main = document.querySelector('main') || document.body;
-                    const r = main.getBoundingClientRect();
-                    return {x: r.x, y: r.y, width: r.width, height: r.height};
-                }""")
                 for seat in seats:
-                    await self._seatmap_move_and_click(seat["x"], seat["y"], page_box)
+                    await self._seatmap_move_and_click(seat["x"], seat["y"], seatmap_box)
                     clicked += 1
-                    await asyncio.sleep(0.05 if self.scenario == "turbo" or self.level <= 3 else 0.12)
+                    selected_points.append((seat["x"], seat["y"]))
+                    await asyncio.sleep(0.02 if self.behavior_type == "bot" else 0.10)
 
             if clicked > 0:
-                self._be.seat_hold_attempts = clicked
-                self._be.seat_view_to_hold_ms = (time.time() - seat_view_start) * 1000
-                self._be.selected_seat_ids = list(range(clicked))
-                print(f"      -> 좌석 {clicked}석 선택 완료 (DOM, 가용 {found}석, 시도 {attempt+1}회)")
-                # 선택 패널에 좌석 수 표시되는지 확인
-                await asyncio.sleep(0.5)
-                return True
+                reflected = await self._wait_for_booking_state(
+                    min_selected=0,
+                    require_amount=True,
+                    timeout_ms=self.cfg.get("seatmap_force_move_profile", {}).get("post_click_verify_ms", 800),
+                )
+                if reflected:
+                    elapsed_ms = (time.time() - seat_view_start) * 1000
+                    remaining_ms = target_duration_ms - elapsed_ms
+                    if remaining_ms > 0:
+                        await self._seatmap_explore(seatmap_box, remaining_ms, selected_points)
+
+                    self._be.seat_hold_attempts = clicked
+                    self._be.seat_view_to_hold_ms = (time.time() - seat_view_start) * 1000
+                    self._be.selected_seat_ids = list(range(clicked))
+                    print(f"      -> 좌석 {clicked}석 선택 완료 (DOM, 가용 {found}석, 시도 {attempt+1}회)")
+                    return True
 
             print(f"      [!] 좌석 선택 실패 (시도 {attempt+1}/{max_attempts}, 가용 {found}석)")
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.08 if self.behavior_type == "bot" else 0.45)
 
         # 최종 폴백: 좌표 클릭
         print(f"      DOM 선택 전부 실패, 좌표 클릭 시도")
-        return await self._select_seats_canvas(max_seats)
+        return await self._select_seats_canvas(max_seats, seat_view_start, target_duration_ms, seatmap_box)
 
     async def _seatmap_move_and_click(self, target_x: float, target_y: float, box: dict):
         """seatmap 단계에서는 실제 mousemove 이벤트가 쌓이도록 클릭 전 경로 이동을 강제한다."""
@@ -1108,19 +1220,12 @@ class TruveMacro:
 
         await self.mouse.click_at(target_x, target_y, force_real_move=True)
 
-    async def _select_seats_canvas(self, max_seats: int):
+    async def _select_seats_canvas(self, max_seats: int, seat_view_start: float,
+                                   target_duration_ms: int, box: dict | None = None):
         """Canvas 또는 DOM 폴백: 좌석 영역에서 좌표 클릭"""
         # 페이지에서 좌석 영역 찾기
-        canvas = await self.page.query_selector('canvas')
-        if canvas:
-            box = await canvas.bounding_box()
-        else:
-            # 전체 페이지 콘텐츠 영역
-            box = await self.page.evaluate("""() => {
-                const main = document.querySelector('main') || document.body;
-                const r = main.getBoundingClientRect();
-                return {x: r.x, y: r.y, width: r.width, height: r.height};
-            }""")
+        if not box:
+            box = await self._get_seatmap_box()
 
         if not box:
             print(f"      [!] 좌석 영역을 찾을 수 없음")
@@ -1135,23 +1240,25 @@ class TruveMacro:
             ((0.30, 0.70), (0.20, 0.50)),
             ((0.15, 0.85), (0.14, 0.58)),
         ]
-        quick_wait = 1800 if self.scenario == "turbo" or self.level <= 3 else 3000
+        quick_wait = self.cfg.get("seatmap_force_move_profile", {}).get("post_click_verify_ms", 800)
 
         for batch_idx, ((x_min, x_max), (y_min, y_max)) in enumerate(batch_regions, start=1):
             selected = 0
+            selected_points = []
             for i in range(max_seats):
                 sx = cx + cw * random.uniform(x_min, x_max)
                 sy = cy + ch * random.uniform(y_min, y_max)
 
                 await self._seatmap_move_and_click(sx, sy, box)
                 selected += 1
+                selected_points.append((sx, sy))
                 self._be.seat_hold_attempts += 1
                 print(f"      좌석 {selected}/{max_seats} 클릭 (x={sx:.0f}, y={sy:.0f})")
 
-                if self.scenario == "turbo" or self.level <= 3:
-                    await asyncio.sleep(random.uniform(0.12, 0.22))
+                if self.behavior_type == "bot":
+                    await asyncio.sleep(random.uniform(0.01, 0.04))
                 else:
-                    await asyncio.sleep(random.uniform(0.3, 0.55))
+                    await asyncio.sleep(random.uniform(0.10, 0.24))
 
             print(f"      -> 좌석 {selected}석 클릭 (좌표, 배치 {batch_idx})")
 
@@ -1161,13 +1268,17 @@ class TruveMacro:
                 timeout_ms=quick_wait,
             )
             if reflected:
+                elapsed_ms = (time.time() - seat_view_start) * 1000
+                remaining_ms = target_duration_ms - elapsed_ms
+                if remaining_ms > 0:
+                    await self._seatmap_explore(box, remaining_ms, selected_points)
                 return True
 
             if batch_idx < len(batch_regions):
                 print(f"      [!] 좌석 반영 미확인 — 같은 스텝에서 빠른 재시도")
-                await asyncio.sleep(0.15 if self.scenario == "turbo" or self.level <= 3 else 0.4)
+                await asyncio.sleep(0.05 if self.behavior_type == "bot" else 0.30)
 
-        return True
+        return False
 
     async def _read_booking_state(self) -> dict:
         """현재 페이지에서 선택 좌석 수와 결제 금액을 추정한다."""
@@ -1266,7 +1377,10 @@ class TruveMacro:
                     )
                 return True
 
-            await asyncio.sleep(0.6)
+            if self.behavior_type == "bot":
+                await self._sleep_ms(70, 150)
+            else:
+                await self._sleep_ms(180, 360)
 
         if label and last_state:
             print(
@@ -1315,14 +1429,14 @@ class TruveMacro:
             await self.page.goto(f"{self.base_url}/payments", wait_until="networkidle")
 
         await self.page.wait_for_load_state("networkidle")
-        await asyncio.sleep(1)
+        await self._sleep_ms(420, 780)
 
         # 실제 결제 페이지로 이동했는지 확인
         if "/payments" not in self.page.url:
             print(f"      [!] 결제 페이지 이동 실패 (현재: {self.page.url})")
             print(f"      [!] 좌석 선점이 안 됐을 수 있음, 직접 이동 시도")
             await self.page.goto(f"{self.base_url}/payments", wait_until="networkidle")
-            await asyncio.sleep(1)
+            await self._sleep_ms(420, 780)
 
         payment_ready = await self._wait_for_booking_state(
             min_selected=0,
@@ -1633,7 +1747,10 @@ class TruveMacro:
         # Level 8+: 금액 확인하듯 스크롤
         if self.level >= 8:
             await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await asyncio.sleep(random.uniform(0.5, 1.5))
+            if self.behavior_type == "human":
+                await asyncio.sleep(random.uniform(0.18, 0.55))
+            else:
+                await asyncio.sleep(random.uniform(0.5, 1.5))
 
         # ── 6. 최종 결제 버튼 클릭 ──
         print(f"      [결제] 최종 결제 버튼 클릭")
@@ -2328,7 +2445,8 @@ class TruveMacro:
 
         print(f"\n{'='*60}")
         print(f"  Truve 매크로 실행")
-        print(f"  Level {self.level}: {self.cfg['name']}")
+        print(f"  행동 타입: {self.behavior_type}")
+        print(f"  내부 프로필: {self.cfg['name']}")
         print(f"  {self.cfg['description']}")
         print(f"  계정: {mask_email(account['email'])}")
         print(f"  대상: {self.base_url}/shows/{show_id}")
@@ -2360,25 +2478,7 @@ class TruveMacro:
                 if not seats_ok:
                     print(f"\n  [!] 좌석 선택 실패 — 결제 진행 불가, 플로우 중단")
                 else:
-                    has_selected = await self._wait_for_booking_state(
-                        min_selected=0,
-                        require_amount=True,
-                        timeout_ms=3500 if self.scenario == "turbo" or self.level <= 3 else 12000,
-                        label="좌석 선점 반영",
-                    )
-
-                    if not has_selected:
-                        print(f"\n  [!] 좌석 선점 확인 실패 (선택 좌석/금액 미반영) — 재시도")
-                        # 한번 더 좌석 선택 시도
-                        seats_ok = await self.step5_select_seats(show_id)
-                        if seats_ok:
-                            seats_ok = await self._wait_for_booking_state(
-                                min_selected=0,
-                                require_amount=True,
-                                timeout_ms=3500 if self.scenario == "turbo" or self.level <= 3 else 12000,
-                                label="좌석 선점 재시도 반영",
-                            )
-
+                    print(f"      -> 좌석 선점 반영 확인")
                     if seats_ok:
                         await self.step6_to_payment()
                         await self.step7_payment(applicant)
