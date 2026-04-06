@@ -24,6 +24,7 @@ Truve 매크로 데이터 수집기 - 메인 실행
 import argparse
 import asyncio
 import logging
+import random
 import sys
 import time
 
@@ -113,7 +114,8 @@ async def run_macro(base_url: str, level: int, runs: int,
                     accounts: list, show_id: int, schedule_id: int,
                     applicant: dict, booking_options: dict,
                     data_logger: DataLogger, level_overrides: dict = None,
-                    scenario_name: str = "", tag_name: str = ""):
+                    scenario_name: str = "", tag_name: str = "",
+                    behavior_type: str = "bot", seat_count_mode: str = "random"):
     """단일 레벨로 매크로 실행"""
     cfg = BOT_LEVELS[level]
 
@@ -127,19 +129,26 @@ async def run_macro(base_url: str, level: int, runs: int,
         account = accounts[run_idx % len(accounts)]
         print(f"\n  --- Run {run_idx + 1}/{runs} (계정: {mask_email(account['email'])}) ---")
 
+        run_booking_options = dict(booking_options)
+        if seat_count_mode == "random":
+            run_booking_options["seat_count"] = random.randint(1, 4)
+        print(f"      이번 시도 좌석 수: {run_booking_options['seat_count']}매")
+        applicant_for_run = dict(applicant)
+
         # 매 run마다 새 매크로 인스턴스 (깨끗한 상태)
         macro = TruveMacro(base_url, level, data_logger,
-                           booking_options=booking_options,
+                           booking_options=run_booking_options,
                            level_overrides=level_overrides,
                            scenario=scenario_name,
-                           tag=tag_name)
+                           tag=tag_name,
+                           behavior_type=behavior_type)
 
         try:
             be_record, fe_record = await macro.run(
                 account=account,
                 show_id=show_id,
                 schedule_id=schedule_id,
-                applicant=applicant,
+                applicant=applicant_for_run,
             )
 
             data_logger.add_be_record(be_record)
@@ -165,7 +174,10 @@ async def run_macro(base_url: str, level: int, runs: int,
 
 async def async_main(args):
     """비동기 메인"""
-    levels = parse_level_arg(args.level)
+    if args.behavior_type == "human":
+        levels = [10] if args.level == "auto" else parse_level_arg(args.level)
+    else:
+        levels = [1] if args.level == "auto" else parse_level_arg(args.level)
     data_logger = DataLogger(output_dir=args.output)
 
     # [Rule 2] 계정 설정: 환경변수 우선, CLI 보조
@@ -188,11 +200,12 @@ async def async_main(args):
     }
 
     # [Rule 1] 예매 부가 옵션 검증
+    default_seat_count = 2 if args.seat_count_mode == "random" else args.seat_count
     try:
         booking_options = build_booking_options(
             seat_grade=args.seat_grade,
             seat_section=args.seat_section,
-            seat_count=args.seat_count,
+            seat_count=default_seat_count,
             pay_method=args.pay_method,
             bank=args.bank,
             card_company=args.card_company,
@@ -218,13 +231,27 @@ async def async_main(args):
     else:
         runs = args.runs
 
+    if args.behavior_runs is not None:
+        runs = args.behavior_runs
+
+    if args.behavior_type == "human":
+        level_overrides.setdefault("typing_use_paste", False)
+        level_overrides.setdefault("mouse_move_to_target", True)
+        level_overrides.setdefault("scroll_enabled", True)
+        level_overrides.setdefault("action_delay_ms", (600, 1400))
+        level_overrides.setdefault("seat_select_delay_ms", (1500, 4500))
+        level_overrides.setdefault("hover_before_click_ms", (40, 180))
+    else:
+        level_overrides.setdefault("action_delay_ms", (20, 120))
+        level_overrides.setdefault("seat_select_delay_ms", (0, 200))
+
     # CLI --retry 오버라이드
     if args.retry is not None:
         level_overrides["retry_count"] = args.retry
 
     total_start = time.time()
 
-    scenario_name = args.scenario or "manual"
+    scenario_name = args.scenario or f"manual_{args.behavior_type}"
     tag_name = args.tag or ""
 
     for level in levels:
@@ -241,6 +268,8 @@ async def async_main(args):
             level_overrides=level_overrides,
             scenario_name=scenario_name,
             tag_name=tag_name,
+            behavior_type=args.behavior_type,
+            seat_count_mode=args.seat_count_mode,
         )
 
     total_elapsed = time.time() - total_start
@@ -255,8 +284,8 @@ async def async_main(args):
         print(f"    {name}: {path}")
 
     print(f"\n  데이터 라벨:")
-    print(f"    is_bot=1 (봇), bot_profile='level_N' 으로 구분")
-    print(f"    사람 데이터(is_bot=0)는 실제 사용자 로그에서 수집 필요")
+    print(f"    behavior_type={args.behavior_type}, is_bot={'1' if args.behavior_type == 'bot' else '0'}")
+    print(f"    bot_profile='level_N' 과 함께 저장")
 
 
 def main():
@@ -272,7 +301,11 @@ def main():
     )
     parser.add_argument("--scenario", default=None, choices=["bot", "turbo", "stealth"],
                         help="시나리오 (bot=데이터수집, turbo=초고속봇, stealth=실전매크로)")
-    parser.add_argument("--level", default="1", help="봇 레벨 (1~10, 'all', '1-5')")
+    parser.add_argument("--behavior-type", default="bot", choices=["bot", "human"],
+                        help="행동 라벨 (bot=봇형 데이터, human=사람형 데이터)")
+    parser.add_argument("--behavior-runs", type=int, default=None,
+                        help="행동 타입 기준 반복 횟수 (--runs보다 우선)")
+    parser.add_argument("--level", default="auto", help="봇 레벨 (1~10, 'all', '1-5', 'auto')")
     parser.add_argument("--runs", type=int, default=1, help="레벨당 반복 횟수 (1~100)")
     parser.add_argument("--url", default=BASE_URL, help="대상 URL")
     parser.add_argument("--show-id", type=int, default=1, help="대상 공연 ID")
@@ -303,12 +336,17 @@ def main():
         help="예매 매수 1~4 (기본: 2)",
     )
     booking_group.add_argument(
-        "--pay-method", default="CARD",
+        "--seat-count-mode", default="random",
+        choices=["random", "fixed"],
+        help="좌석 매수 선택 방식 (random=매 run마다 1~4 랜덤, fixed=--seat-count 고정)",
+    )
+    booking_group.add_argument(
+        "--pay-method", default="VIRTUAL_ACCOUNT",
         choices=["CARD", "VIRTUAL_ACCOUNT"],
         help="결제 방식 (CARD=카드, VIRTUAL_ACCOUNT=무통장)",
     )
     booking_group.add_argument(
-        "--bank", default="국민",
+        "--bank", default="신한",
         help="무통장 입금 은행 (국민,신한,우리,하나,농협,카카오뱅크 등)",
     )
     booking_group.add_argument(
@@ -316,7 +354,7 @@ def main():
         help="카드 결제 카드사 (삼성,현대,KB국민,신한 등)",
     )
     booking_group.add_argument(
-        "--cash-receipt", default="소득공제",
+        "--cash-receipt", default="발급안함",
         choices=["소득공제", "지출증빙", "발급안함"],
         help="현금영수증 유형 (무통장 입금 시)",
     )
@@ -346,21 +384,27 @@ def main():
     try:
         validate_url(args.url)
         validate_runs(args.runs)
+        if args.behavior_runs is not None:
+            validate_runs(args.behavior_runs)
         validate_show_id(args.show_id)
         validate_show_id(args.schedule_id)
-        parse_level_arg(args.level)  # 레벨 검증
+        if args.level != "auto":
+            parse_level_arg(args.level)  # 레벨 검증
     except ValueError as e:
         print(f"  [INPUT ERROR] {e}")
         sys.exit(1)
 
     print(f"  대상: {args.url}")
+    print(f"  행동 타입: {args.behavior_type}")
     if args.scenario:
         sc = SCENARIOS[args.scenario]
         print(f"  시나리오: {args.scenario} ({sc['name']})")
     print(f"  레벨: {args.level}")
-    print(f"  반복: {args.runs}회/레벨")
+    effective_runs = args.behavior_runs if args.behavior_runs is not None else args.runs
+    print(f"  반복: {effective_runs}회/레벨")
     print(f"  공연: showId={args.show_id}")
-    print(f"  좌석: {args.seat_grade.upper()} / {args.seat_section.upper()} / {args.seat_count}매")
+    seat_count_label = "1~4 랜덤" if args.seat_count_mode == "random" else f"{args.seat_count}매"
+    print(f"  좌석: {args.seat_grade.upper()} / {args.seat_section.upper()} / {seat_count_label}")
     if args.pay_method == "CARD":
         print(f"  결제: 카드 ({args.card_company})")
     else:

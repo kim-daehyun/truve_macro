@@ -40,9 +40,9 @@ class MouseController:
         self.current_y = 300.0
         self.move_log: list[dict] = []
 
-    async def move_to(self, target_x: float, target_y: float):
+    async def move_to(self, target_x: float, target_y: float, force_real_move: bool = False):
         """레벨에 맞는 마우스 이동 - 화면에서 커서가 움직이는 것이 보임"""
-        if not self.cfg["mouse_move_to_target"]:
+        if not self.cfg["mouse_move_to_target"] and not force_real_move:
             self.current_x = target_x
             self.current_y = target_y
             return
@@ -51,6 +51,21 @@ class MouseController:
         speed_ms = self.cfg["mouse_move_speed_ms"]
         curve = self.cfg["mouse_curve"]
         jitter = self.cfg["mouse_jitter_px"]
+
+        if force_real_move:
+            profile = self.cfg.get("seatmap_force_move_profile", {})
+            distance = math.sqrt((target_x - self.current_x) ** 2 + (target_y - self.current_y) ** 2)
+            divisor_range = profile.get("distance_divisor_range", (22.0, 34.0))
+            divisor = random.uniform(divisor_range[0], divisor_range[1])
+            distance_steps = max(10, int(distance / divisor))
+            steps_range = profile.get("steps_range", (16, 26))
+            steps = max(distance_steps, random.randint(steps_range[0], steps_range[1]))
+            speed_range = profile.get("speed_ms_range", (4.0, 8.0))
+            speed_ms = max(speed_ms, random.uniform(speed_range[0], speed_range[1]))
+            curve_choices = profile.get("curve_choices", ["bezier", "ease_in_out"])
+            curve = random.choice(curve_choices)
+            jitter_range = profile.get("jitter_range", (0.8, 1.8))
+            jitter = max(jitter, random.uniform(jitter_range[0], jitter_range[1]))
 
         sx, sy = self.current_x, self.current_y
 
@@ -105,7 +120,7 @@ class MouseController:
                 else:
                     await asyncio.sleep(speed_ms / 1000.0)
 
-    async def click_at(self, target_x: float, target_y: float):
+    async def click_at(self, target_x: float, target_y: float, force_real_move: bool = False):
         """마우스 이동 → 호버 → 클릭 (화면에서 보임)"""
         offset = self.cfg["click_offset_px"]
         hover_min, hover_max = self.cfg["hover_before_click_ms"]
@@ -113,7 +128,18 @@ class MouseController:
         click_x = target_x + random.uniform(-offset, offset)
         click_y = target_y + random.uniform(-offset, offset)
 
-        await self.move_to(click_x, click_y)
+        await self.move_to(click_x, click_y, force_real_move=force_real_move)
+
+        if force_real_move:
+            profile = self.cfg.get("seatmap_force_move_profile", {})
+            hover_range = profile.get("hover_ms_range", (18.0, 50.0))
+            press_range = profile.get("press_ms_range", (10.0, 25.0))
+            hover = random.uniform(hover_range[0], hover_range[1]) / 1000.0
+            await asyncio.sleep(hover)
+            await self.page.mouse.down()
+            await asyncio.sleep(random.uniform(press_range[0], press_range[1]) / 1000.0)
+            await self.page.mouse.up()
+            return
 
         if hover_max > 0:
             hover = random.uniform(hover_min, hover_max)
@@ -170,7 +196,7 @@ class TruveMacro:
 
     def __init__(self, base_url: str, level: int, logger: DataLogger,
                  booking_options: dict = None, level_overrides: dict = None,
-                 scenario: str = "", tag: str = ""):
+                 scenario: str = "", tag: str = "", behavior_type: str = "bot"):
         if not PLAYWRIGHT_AVAILABLE:
             raise RuntimeError("pip install playwright && playwright install chromium")
 
@@ -178,12 +204,14 @@ class TruveMacro:
         self.level = level
         self.scenario = scenario
         self.tag = tag
+        self.behavior_type = behavior_type
         # 레벨 설정 복사 후 오버라이드 적용 (stealth 시나리오용)
         self.cfg = dict(BOT_LEVELS[level])
         if level_overrides:
             self.cfg.update(level_overrides)
         self.logger = logger
         self.run_id = str(uuid.uuid4())[:8]
+        self.session_id = str(uuid.uuid4())
         # 예매 부가 설정 (좌석 등급/구역/매수, 결제 방식, 회차 날짜/시간)
         self.booking = booking_options or {
             "seat_grade": "any",
@@ -203,13 +231,50 @@ class TruveMacro:
 
         self._be = BEDataRecord(
             run_id=self.run_id, bot_profile=f"level_{level}",
-            level=level, scenario=scenario, tag=tag,
+            level=level, scenario=scenario, behavior_type=behavior_type, tag=tag,
         )
         self._fe = FEDataRecord(
             run_id=self.run_id, bot_profile=f"level_{level}",
-            level=level, scenario=scenario, tag=tag,
+            level=level, scenario=scenario, behavior_type=behavior_type, tag=tag,
         )
+        self._be.is_bot = 1 if behavior_type == "bot" else 0
+        self._fe.is_bot = 1 if behavior_type == "bot" else 0
         self._last_action = 0.0
+        self._telemetry_user_id = "anonymous"
+        self._seatmap_stage_started = False
+        self._seatmap_stage_captured = False
+        self.cfg["seatmap_force_move_profile"] = self._build_seatmap_force_move_profile()
+
+    def _build_seatmap_force_move_profile(self) -> dict:
+        """seatmap 전용 실제 마우스 이동 프로필. run마다 약간 다르게 뽑는다."""
+        if self.scenario == "turbo" or self.level <= 3:
+            return {
+                "steps_range": (14, 22),
+                "speed_ms_range": (3.5, 6.5),
+                "jitter_range": (0.7, 1.4),
+                "distance_divisor_range": (26.0, 40.0),
+                "curve_choices": ["bezier", "ease_in_out"],
+                "scout_points_range": (2, 3),
+                "scout_pause_ms_range": (10.0, 22.0),
+                "hover_ms_range": (14.0, 35.0),
+                "press_ms_range": (8.0, 20.0),
+                "scout_spread_x_ratio_range": (0.04, 0.065),
+                "scout_spread_y_ratio_range": (0.03, 0.055),
+            }
+
+        return {
+            "steps_range": (18, 30),
+            "speed_ms_range": (5.0, 9.0),
+            "jitter_range": (1.0, 2.0),
+            "distance_divisor_range": (24.0, 36.0),
+            "curve_choices": ["bezier", "ease_in_out", "human_like"],
+            "scout_points_range": (3, 4),
+            "scout_pause_ms_range": (18.0, 40.0),
+            "hover_ms_range": (20.0, 55.0),
+            "press_ms_range": (10.0, 26.0),
+            "scout_spread_x_ratio_range": (0.05, 0.08),
+            "scout_spread_y_ratio_range": (0.04, 0.065),
+        }
 
     # ================================================================
     # Setup / Teardown
@@ -262,10 +327,66 @@ class TruveMacro:
         await self.page.add_init_script("""
             window.__tel = {
                 mouse:[], clicks:[], keys:[], scrolls:[],
-                vis:0, focus:0
+                vis:0, focus:0,
+                sessionId: "",
+                userId: "anonymous",
+                currentStage: null,
+                stages: {},
+                _ensureStage(stageName) {
+                    if (!this.stages[stageName]) {
+                        this.stages[stageName] = {
+                            session_id: this.sessionId || "",
+                            user_id: this.userId || "anonymous",
+                            event_type: stageName,
+                            page_enter_ts: 0,
+                            page_leave_ts: 0,
+                            mousemove_events: [],
+                            mousemove_count: 0,
+                            viewport_width: window.innerWidth || 0,
+                            viewport_height: window.innerHeight || 0,
+                        };
+                    }
+                    return this.stages[stageName];
+                },
+                startStage(stageName, meta = {}) {
+                    this.sessionId = meta.sessionId || this.sessionId || "";
+                    this.userId = meta.userId || this.userId || "anonymous";
+                    const stage = this._ensureStage(stageName);
+                    stage.session_id = this.sessionId;
+                    stage.user_id = this.userId;
+                    stage.event_type = stageName;
+                    if (!stage.page_enter_ts) {
+                        stage.page_enter_ts = Date.now();
+                    }
+                    stage.viewport_width = window.innerWidth || 0;
+                    stage.viewport_height = window.innerHeight || 0;
+                    this.currentStage = stageName;
+                },
+                endStage(stageName) {
+                    const stage = this._ensureStage(stageName);
+                    if (!stage.page_leave_ts) {
+                        stage.page_leave_ts = Date.now();
+                    }
+                    if (this.currentStage === stageName) {
+                        this.currentStage = null;
+                    }
+                    return stage;
+                },
+                recordStageMousemove(event) {
+                    if (!this.currentStage) return;
+                    const stage = this._ensureStage(this.currentStage);
+                    const payload = {timestamp:event.t, x:event.x, y:event.y};
+                    stage.mousemove_events.push(payload);
+                    stage.mousemove_count = stage.mousemove_events.length;
+                    stage.viewport_width = window.innerWidth || 0;
+                    stage.viewport_height = window.innerHeight || 0;
+                }
             };
-            document.addEventListener('mousemove', e =>
-                window.__tel.mouse.push({x:e.clientX,y:e.clientY,t:Date.now()}));
+            document.addEventListener('mousemove', e => {
+                const payload = {x:e.clientX,y:e.clientY,t:Date.now()};
+                window.__tel.mouse.push(payload);
+                window.__tel.recordStageMousemove(payload);
+            });
             document.addEventListener('click', e =>
                 window.__tel.clicks.push({x:e.clientX,y:e.clientY,t:Date.now()}));
             document.addEventListener('keydown', e =>
@@ -422,6 +543,50 @@ class TruveMacro:
         if self.level >= 8 and random.random() < 0.3:
             await asyncio.sleep(0.5)
             await self.page.evaluate(f"window.scrollBy(0, -{amount // 2})")
+
+    async def _start_stage_telemetry(self, event_type: str):
+        """특정 단계 raw telemetry 수집 시작."""
+        try:
+            await self.page.evaluate("""(payload) => {
+                if (!window.__tel || !window.__tel.startStage) return;
+                window.__tel.startStage(payload.eventType, {
+                    sessionId: payload.sessionId,
+                    userId: payload.userId,
+                });
+            }""", {
+                "eventType": event_type,
+                "sessionId": self.session_id,
+                "userId": self._telemetry_user_id or "anonymous",
+            })
+        except Exception:
+            pass
+
+    async def _capture_stage_telemetry(self, event_type: str):
+        """특정 단계 raw telemetry를 FE 레코드에 반영."""
+        try:
+            data = await self.page.evaluate("""(stageName) => {
+                if (!window.__tel) return null;
+                if (window.__tel.endStage) {
+                    window.__tel.endStage(stageName);
+                }
+                return window.__tel.stages?.[stageName] || null;
+            }""", event_type)
+        except Exception:
+            return
+
+        if not data:
+            return
+
+        if event_type == "seatmap":
+            self._fe.seatmap_session_id = data.get("session_id", "")
+            self._fe.seatmap_user_id = data.get("user_id", "")
+            self._fe.seatmap_event_type = data.get("event_type", "")
+            self._fe.seatmap_page_enter_ts = data.get("page_enter_ts", 0) or 0
+            self._fe.seatmap_page_leave_ts = data.get("page_leave_ts", 0) or 0
+            self._fe.seatmap_mousemove_events = data.get("mousemove_events", []) or []
+            self._fe.seatmap_mousemove_count = data.get("mousemove_count", 0) or 0
+            self._fe.seatmap_viewport_width = data.get("viewport_width", 0) or 0
+            self._fe.seatmap_viewport_height = data.get("viewport_height", 0) or 0
 
     # ================================================================
     # Step 1: 로그인 (/signin)
@@ -812,6 +977,10 @@ class TruveMacro:
         await self.page.wait_for_load_state("networkidle")
         await asyncio.sleep(2)
 
+        if not self._seatmap_stage_started:
+            await self._start_stage_telemetry("seatmap")
+            self._seatmap_stage_started = True
+
         seat_view_start = time.time()
 
         d_min, d_max = self.cfg["seat_select_delay_ms"]
@@ -840,11 +1009,20 @@ class TruveMacro:
             print(f"      PixiJS Canvas 감지 → Canvas 좌표 클릭")
             return await self._select_seats_canvas(max_seats)
 
-        # ── DOM 기반 좌석 선택 (최대 3회 재시도) ──
+        # ── DOM 기반 좌석 선택 (실제 마우스 이동 포함) ──
         max_attempts = self.cfg.get("max_seat_attempts", 5)
         for attempt in range(max_attempts):
-            selected = await self.page.evaluate(f"""(maxSeats) => {{
-                // 좌석 후보 셀렉터
+            seats = await self.page.evaluate("""(maxSeats) => {
+                const isVisible = (el) => {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.display !== "none"
+                        && style.visibility !== "hidden"
+                        && rect.width > 0
+                        && rect.height > 0;
+                };
+
                 const seatSelectors = [
                     'circle[fill]:not([fill="#aaaaaa"]):not([fill="#f1f1f4"]):not([fill="rgb(170,170,170)"])',
                     '[data-status="available"]',
@@ -854,43 +1032,46 @@ class TruveMacro:
                     'g[style*="cursor: pointer"] circle',
                 ];
 
-                let seats = [];
-                for (const sel of seatSelectors) {{
-                    const found = document.querySelectorAll(sel);
-                    if (found.length > 0) {{
-                        seats = [...found];
+                let elements = [];
+                for (const sel of seatSelectors) {
+                    const found = [...document.querySelectorAll(sel)].filter(isVisible);
+                    if (found.length > 0) {
+                        elements = found;
                         break;
-                    }}
-                }}
+                    }
+                }
 
-                if (seats.length === 0) {{
-                    // 폴백: circle 중 회색 아닌 것
-                    const all = document.querySelectorAll('circle, rect');
-                    seats = [...all].filter(el => {{
+                if (elements.length === 0) {
+                    const all = [...document.querySelectorAll('circle, rect')].filter(isVisible);
+                    elements = all.filter(el => {
                         const fill = (el.getAttribute('fill') || '').toLowerCase();
                         return fill && fill !== 'none' && fill !== '#ffffff'
-                               && !fill.includes('aaa') && !fill.includes('f1f1');
-                    }});
-                }}
+                            && !fill.includes('aaa') && !fill.includes('f1f1');
+                    });
+                }
 
-                if (seats.length === 0) return {{found: 0, clicked: 0}};
+                return elements.slice(0, maxSeats).map(el => {
+                    const r = el.getBoundingClientRect();
+                    return {
+                        x: r.left + r.width / 2,
+                        y: r.top + r.height / 2,
+                    };
+                });
+            }""", max_seats)
 
-                // 클릭
-                let clicked = 0;
-                const toClick = Math.min(maxSeats, seats.length);
-                for (let i = 0; i < toClick; i++) {{
-                    const seat = seats[i];
-                    // 마우스 이벤트 순서대로 발생 (pointerdown → click)
-                    seat.dispatchEvent(new PointerEvent('pointerdown', {{bubbles:true}}));
-                    seat.dispatchEvent(new PointerEvent('pointerup', {{bubbles:true}}));
-                    seat.dispatchEvent(new MouseEvent('click', {{bubbles:true}}));
-                    clicked++;
-                }}
-                return {{found: seats.length, clicked: clicked}};
-            }}""", max_seats)
+            found = len(seats) if isinstance(seats, list) else 0
+            clicked = 0
 
-            found = selected.get("found", 0) if isinstance(selected, dict) else 0
-            clicked = selected.get("clicked", 0) if isinstance(selected, dict) else selected
+            if found > 0:
+                page_box = await self.page.evaluate("""() => {
+                    const main = document.querySelector('main') || document.body;
+                    const r = main.getBoundingClientRect();
+                    return {x: r.x, y: r.y, width: r.width, height: r.height};
+                }""")
+                for seat in seats:
+                    await self._seatmap_move_and_click(seat["x"], seat["y"], page_box)
+                    clicked += 1
+                    await asyncio.sleep(0.05 if self.scenario == "turbo" or self.level <= 3 else 0.12)
 
             if clicked > 0:
                 self._be.seat_hold_attempts = clicked
@@ -907,6 +1088,25 @@ class TruveMacro:
         # 최종 폴백: 좌표 클릭
         print(f"      DOM 선택 전부 실패, 좌표 클릭 시도")
         return await self._select_seats_canvas(max_seats)
+
+    async def _seatmap_move_and_click(self, target_x: float, target_y: float, box: dict):
+        """seatmap 단계에서는 실제 mousemove 이벤트가 쌓이도록 클릭 전 경로 이동을 강제한다."""
+        cx, cy = box["x"], box["y"]
+        cw, ch = box["width"], box["height"]
+        profile = self.cfg.get("seatmap_force_move_profile", {})
+        scout_points_range = profile.get("scout_points_range", (2, 3))
+        scout_pause_range = profile.get("scout_pause_ms_range", (10.0, 22.0))
+        scout_spread_x = random.uniform(*profile.get("scout_spread_x_ratio_range", (0.04, 0.065)))
+        scout_spread_y = random.uniform(*profile.get("scout_spread_y_ratio_range", (0.03, 0.055)))
+        scout_points = random.randint(scout_points_range[0], scout_points_range[1])
+
+        for _ in range(scout_points):
+            scout_x = min(max(target_x + random.uniform(-cw * scout_spread_x, cw * scout_spread_x), cx), cx + cw)
+            scout_y = min(max(target_y + random.uniform(-ch * scout_spread_y, ch * scout_spread_y), cy), cy + ch)
+            await self.mouse.move_to(scout_x, scout_y, force_real_move=True)
+            await asyncio.sleep(random.uniform(scout_pause_range[0], scout_pause_range[1]) / 1000.0)
+
+        await self.mouse.click_at(target_x, target_y, force_real_move=True)
 
     async def _select_seats_canvas(self, max_seats: int):
         """Canvas 또는 DOM 폴백: 좌석 영역에서 좌표 클릭"""
@@ -943,7 +1143,7 @@ class TruveMacro:
                 sx = cx + cw * random.uniform(x_min, x_max)
                 sy = cy + ch * random.uniform(y_min, y_max)
 
-                await self.mouse.click_at(sx, sy)
+                await self._seatmap_move_and_click(sx, sy, box)
                 selected += 1
                 self._be.seat_hold_attempts += 1
                 print(f"      좌석 {selected}/{max_seats} 클릭 (x={sx:.0f}, y={sy:.0f})")
@@ -1087,6 +1287,11 @@ class TruveMacro:
         """
         print(f"\n  [Step 6/8] Booking 생성 + 결제 페이지 이동")
         self._be.api_call_sequence.append("to_payment")
+
+        if self._seatmap_stage_started and not self._seatmap_stage_captured:
+            await self._capture_stage_telemetry("seatmap")
+            self._seatmap_stage_captured = True
+
         await self._dismiss_popups()
 
         await self._delay()
@@ -2135,6 +2340,7 @@ class TruveMacro:
         print(f"{'='*60}")
 
         try:
+            self._telemetry_user_id = account.get("email", "anonymous")
             # 매번 새 브라우저 (이전 run의 상태/쿠키 영향 제거)
             await self.setup()
 
@@ -2184,6 +2390,10 @@ class TruveMacro:
             print(f"\n  [에러] {type(e).__name__}: {e}")
 
         finally:
+            if self.page and self._seatmap_stage_started and not self._seatmap_stage_captured:
+                await self._capture_stage_telemetry("seatmap")
+                self._seatmap_stage_captured = True
+
             elapsed = (time.time() - flow_start) * 1000
             self._be.total_flow_duration_ms = elapsed
             self._be.session_duration_ms = elapsed

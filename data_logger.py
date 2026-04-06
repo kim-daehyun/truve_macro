@@ -67,6 +67,7 @@ class BEDataRecord:
     bot_profile: str = ""  # level_N
     level: int = 0
     scenario: str = ""     # bot / stealth / manual
+    behavior_type: str = "bot"
     tag: str = ""          # 커스텀 태그
     is_bot: int = 1
     timestamp: str = ""
@@ -131,6 +132,7 @@ class FEDataRecord:
     bot_profile: str = ""
     level: int = 0
     scenario: str = ""
+    behavior_type: str = "bot"
     tag: str = ""
     is_bot: int = 1
     timestamp: str = ""
@@ -179,6 +181,18 @@ class FEDataRecord:
     devtools_open: bool = False
     console_log_detected: bool = False
 
+    # seatmap 단계 raw telemetry
+    seatmap_session_id: str = ""
+    seatmap_user_id: str = ""
+    seatmap_event_type: str = ""
+    seatmap_page_enter_ts: int = 0
+    seatmap_page_leave_ts: int = 0
+    seatmap_duration_ms: int = 0
+    seatmap_mousemove_events: list = field(default_factory=list)
+    seatmap_mousemove_count: int = 0
+    seatmap_viewport_width: int = 0
+    seatmap_viewport_height: int = 0
+
     def compute_stats(self):
         if len(self.click_intervals_ms) > 0:
             self.click_interval_mean_ms = statistics.mean(self.click_intervals_ms)
@@ -186,6 +200,10 @@ class FEDataRecord:
             self.keystroke_interval_mean_ms = statistics.mean(self.keystroke_intervals_ms)
             if len(self.keystroke_intervals_ms) > 1:
                 self.keystroke_interval_var = statistics.variance(self.keystroke_intervals_ms)
+        if self.seatmap_page_enter_ts and self.seatmap_page_leave_ts:
+            self.seatmap_duration_ms = self.seatmap_page_leave_ts - self.seatmap_page_enter_ts
+        if self.seatmap_mousemove_events and not self.seatmap_mousemove_count:
+            self.seatmap_mousemove_count = len(self.seatmap_mousemove_events)
 
 
 class DataLogger:
