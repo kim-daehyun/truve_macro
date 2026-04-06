@@ -155,8 +155,8 @@ python main.py --level 1 --pay-method CARD --card-company KB국민
 # 국민은행 + 소득공제
 python main.py --level 3 --pay-method VIRTUAL_ACCOUNT --bank 국민 --cash-receipt 소득공제
 
-# 신한은행 + 미발행
-python main.py --level 1 --pay-method VIRTUAL_ACCOUNT --bank 신한 --cash-receipt 미발행
+# 신한은행 + 발급안함
+python main.py --level 1 --pay-method VIRTUAL_ACCOUNT --bank 신한 --cash-receipt 발급안함
 
 # 카카오뱅크 + 지출증빙
 python main.py --level 5 --pay-method VIRTUAL_ACCOUNT --bank 카카오뱅크 --cash-receipt 지출증빙
@@ -247,7 +247,7 @@ python main.py \
 | `--pay-method` | `CARD`, `VIRTUAL_ACCOUNT` | `CARD` |
 | `--card-company` | 삼성, 현대, KB국민, 신한, 롯데, 하나, 우리, BC, NH농협 | `삼성` |
 | `--bank` | 국민, 신한, 우리, 하나, 농협, 기업, SC제일, 카카오뱅크, 토스뱅크, 케이뱅크 | `국민` |
-| `--cash-receipt` | `소득공제`, `지출증빙`, `미발행` | `소득공제` |
+| `--cash-receipt` | `소득공제`, `지출증빙`, `발급안함` | `소득공제` |
 
 ---
 
@@ -287,7 +287,7 @@ python main.py \
 8. Toss Payments SDK 결제 처리
    ├ [카드] 카드사 선택 (--card-company) → 결제
    └ [무통장] 은행 선택 (--bank) → 입금자명 입력
-              → 현금영수증 (--cash-receipt: 소득공제/지출증빙/미발행)
+              → 현금영수증 (--cash-receipt: 소득공제/지출증빙/발급안함)
               → 소득공제 시 휴대폰번호 자동 입력 → 결제
 ```
 

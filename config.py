@@ -604,7 +604,11 @@ VALID_CARD_COMPANIES = {
 }
 
 # 현금영수증 유형 (무통장 입금 시)
-VALID_CASH_RECEIPTS = {"소득공제", "지출증빙", "미발행"}
+# 표준 표기는 "발급안함"으로 통일하되, 기존 "미발행"도 호환 입력으로 허용
+VALID_CASH_RECEIPTS = {"소득공제", "지출증빙", "발급안함"}
+_CASH_RECEIPT_ALIASES = {
+    "미발행": "발급안함",
+}
 
 
 def build_booking_options(
@@ -668,6 +672,9 @@ def build_booking_options(
         raise ValueError(
             f"잘못된 카드사: {card_company} (허용: {', '.join(sorted(VALID_CARD_COMPANIES))})"
         )
+
+    # 현금영수증 별칭 정규화
+    cash_receipt = _CASH_RECEIPT_ALIASES.get(cash_receipt, cash_receipt)
 
     # 현금영수증 검증
     if cash_receipt not in VALID_CASH_RECEIPTS:

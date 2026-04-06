@@ -317,7 +317,7 @@ def main():
     )
     booking_group.add_argument(
         "--cash-receipt", default="소득공제",
-        choices=["소득공제", "지출증빙", "미발행"],
+        choices=["소득공제", "지출증빙", "발급안함"],
         help="현금영수증 유형 (무통장 입금 시)",
     )
     booking_group.add_argument(

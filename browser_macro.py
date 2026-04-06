@@ -732,12 +732,34 @@ class TruveMacro:
             poll_start = time.time()
             poll_count += 1
 
+            # 짧게라도 URL 변화를 먼저 기다려 좌석 페이지 전환을 바로 잡는다.
+            try:
+                await self.page.wait_for_url("**/seat", timeout=250)
+            except Exception:
+                pass
+
             # 현재 URL 확인 → 좌석 페이지로 이동했으면 통과
             current_url = self.page.url
             if "/seat" in current_url:
                 print(f"      -> 대기열 통과! (폴링 {poll_count}회)")
                 self._be.queue_poll_count = poll_count
                 return True
+
+            # URL 변경 전이라도 좌석 화면 요소가 먼저 보이면 통과 처리
+            try:
+                seat_ready = await self.page.evaluate("""() => {
+                    return Boolean(
+                        document.querySelector("canvas")
+                        || [...document.querySelectorAll("button, div, span")]
+                            .some(el => (el.textContent || "").includes("결제하기"))
+                    );
+                }""")
+                if seat_ready:
+                    print(f"      -> 대기열 통과! (좌석 화면 선감지, 폴링 {poll_count}회)")
+                    self._be.queue_poll_count = poll_count
+                    return True
+            except Exception:
+                pass
 
             # 순위 읽기
             try:
@@ -917,10 +939,118 @@ class TruveMacro:
             selected += 1
             self._be.seat_hold_attempts += 1
             print(f"      좌석 {selected}/{max_seats} 클릭 (x={sx:.0f}, y={sy:.0f})")
-            await self._delay()
+            # 좌석 반영은 너무 빠르게 넘기면 누락되는 경우가 있어 별도 안정화 대기
+            await asyncio.sleep(random.uniform(0.35, 0.7))
 
         print(f"      -> 좌석 {selected}석 클릭 (좌표)")
         return selected > 0
+
+    async def _read_booking_state(self) -> dict:
+        """현재 페이지에서 선택 좌석 수와 결제 금액을 추정한다."""
+        try:
+            return await self.page.evaluate("""() => {
+                const text = (document.body.innerText || "").replace(/\\s+/g, " ");
+
+                const parseAmount = (source) => {
+                    const patterns = [
+                        /총\\s*(\\d[\\d,]*)원\\s*결제하기/,
+                        /(\\d[\\d,]*)원\\s*결제하기/,
+                        /(\\d[\\d,]*)원\\s*결제/,
+                        /총\\s*(\\d[\\d,]*)원/,
+                        /합계\\s*(\\d[\\d,]*)원/,
+                        /결제\\s*금액\\s*(\\d[\\d,]*)원/,
+                        /상품\\s*금액\\s*(\\d[\\d,]*)원/,
+                        /최종\\s*금액\\s*(\\d[\\d,]*)원/,
+                    ];
+                    for (const pattern of patterns) {
+                        const match = source.match(pattern);
+                        if (match) {
+                            const value = parseInt(match[1].replace(/,/g, ""), 10);
+                            if (!Number.isNaN(value)) return value;
+                        }
+                    }
+                    return 0;
+                };
+
+                const countPatterns = [
+                    /선택\\s*좌석\\s*(\\d+)/,
+                    /총\\s*(\\d+)\\s*매/,
+                    /선택\\s*매수\\s*(\\d+)/,
+                ];
+                let selectedCount = 0;
+                for (const pattern of countPatterns) {
+                    const match = text.match(pattern);
+                    if (match) {
+                        selectedCount = parseInt(match[1], 10);
+                        if (!Number.isNaN(selectedCount)) break;
+                    }
+                }
+
+                const buttonTexts = [...document.querySelectorAll("button, [role='button'], div, span, p, strong")]
+                    .map(el => (el.textContent || "").replace(/\\s+/g, " ").trim())
+                    .filter(Boolean)
+                    .filter(value =>
+                        value.includes("결제")
+                        || value.includes("좌석")
+                        || value.includes("총")
+                        || value.includes("금액")
+                        || value.includes("합계")
+                    )
+                    .slice(0, 25);
+
+                let amount = parseAmount(text);
+                if (amount === 0) {
+                    for (const value of buttonTexts) {
+                        amount = parseAmount(value);
+                        if (amount > 0) break;
+                    }
+                }
+
+                return {
+                    selectedCount,
+                    amount,
+                    buttonTexts,
+                };
+            }""")
+        except Exception:
+            return {
+                "selectedCount": 0,
+                "amount": 0,
+                "buttonTexts": [],
+            }
+
+    async def _wait_for_booking_state(self, *,
+                                      min_selected: int = 0,
+                                      require_amount: bool = False,
+                                      timeout_ms: int = 8000,
+                                      label: str = "") -> bool:
+        """선택 좌석 수/결제 금액이 반영될 때까지 대기한다."""
+        deadline = time.time() + timeout_ms / 1000.0
+        last_state = None
+
+        while time.time() < deadline:
+            state = await self._read_booking_state()
+            last_state = state
+
+            selected_ok = min_selected <= 0 or state.get("selectedCount", 0) >= min_selected
+            amount_ok = (state.get("amount", 0) > 0) if require_amount else True
+            if selected_ok and amount_ok:
+                if label:
+                    print(
+                        f"      -> {label} 확인 "
+                        f"(선택 {state.get('selectedCount', 0)}석, 금액 {state.get('amount', 0)}원)"
+                    )
+                return True
+
+            await asyncio.sleep(0.6)
+
+        if label and last_state:
+            print(
+                f"      [!] {label} 대기 실패 "
+                f"(선택 {last_state.get('selectedCount', 0)}석, 금액 {last_state.get('amount', 0)}원)"
+            )
+            print(f"      [DEBUG] UI 텍스트 후보: {last_state.get('buttonTexts', [])}")
+        return False
 
     # ================================================================
     # Step 6: 결제하기 클릭 → 결제 페이지
@@ -936,6 +1066,15 @@ class TruveMacro:
         await self._dismiss_popups()
 
         await self._delay()
+
+        ready = await self._wait_for_booking_state(
+            min_selected=0,
+            require_amount=True,
+            timeout_ms=12000,
+            label="좌석/금액 반영",
+        )
+        if not ready:
+            raise RuntimeError("좌석 선택 후 결제 금액이 0원 상태로 유지됨")
 
         try:
             await self._click_selector(
@@ -956,7 +1095,167 @@ class TruveMacro:
             await self.page.goto(f"{self.base_url}/payments", wait_until="networkidle")
             await asyncio.sleep(1)
 
+        payment_ready = await self._wait_for_booking_state(
+            min_selected=0,
+            require_amount=True,
+            timeout_ms=10000,
+            label="결제 페이지 금액 반영",
+        )
+        if not payment_ready:
+            raise RuntimeError("결제 페이지 금액이 0원 상태로 유지됨")
+
         print(f"      -> 결제 페이지 로딩 완료 ({self.page.url})")
+
+    async def _wait_for_payment_form_ready(self, timeout_ms: int = 12000) -> bool:
+        """예약자 정보 입력 폼이 실제로 보일 때까지 기다린다."""
+        deadline = time.time() + timeout_ms / 1000.0
+        while time.time() < deadline:
+            try:
+                ready = await self.page.evaluate("""() => {
+                    const isVisible = (el) => {
+                        if (!el) return false;
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        return style.display !== "none"
+                            && style.visibility !== "hidden"
+                            && rect.width > 0
+                            && rect.height > 0;
+                    };
+
+                    const inputs = [...document.querySelectorAll("input, textarea")]
+                        .filter(isVisible);
+                    const buttons = [...document.querySelectorAll("button, [role='button']")]
+                        .filter(isVisible)
+                        .map(el => (el.textContent || "").replace(/\\s+/g, " ").trim())
+                        .filter(Boolean);
+                    const text = (document.body.innerText || "").replace(/\\s+/g, " ");
+
+                    const hasFormText = text.includes("예약자 정보")
+                        || text.includes("티켓 수령 방법")
+                        || text.includes("결제수단");
+                    const hasPaymentButton = buttons.some(value => value.includes("결제하기"));
+                    return hasFormText && inputs.length >= 3 && hasPaymentButton;
+                }""")
+                if ready:
+                    return True
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+        return False
+
+    async def _debug_payment_page(self):
+        """결제 페이지에서 보이는 입력칸/버튼 정보를 출력한다."""
+        try:
+            inputs = await self.page.evaluate("""() => {
+                const isVisible = (el) => {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.display !== "none"
+                        && style.visibility !== "hidden"
+                        && rect.width > 0
+                        && rect.height > 0;
+                };
+                return [...document.querySelectorAll("input, textarea, select")]
+                    .filter(isVisible)
+                    .slice(0, 20)
+                    .map(el => ({
+                        tag: el.tagName.toLowerCase(),
+                        name: el.getAttribute("name") || "",
+                        id: el.id || "",
+                        type: el.getAttribute("type") || "",
+                        placeholder: el.getAttribute("placeholder") || "",
+                        value: el.value || "",
+                    }));
+            }""")
+            buttons = await self.page.evaluate("""() => {
+                const isVisible = (el) => {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.display !== "none"
+                        && style.visibility !== "hidden"
+                        && rect.width > 0
+                        && rect.height > 0;
+                };
+                return [...document.querySelectorAll("button, [role='button'], label, div, span")]
+                    .filter(isVisible)
+                    .map(el => (el.textContent || "").replace(/\\s+/g, " ").trim())
+                    .filter(Boolean)
+                    .filter(value =>
+                        value.includes("결제")
+                        || value.includes("동의")
+                        || value.includes("현장수령")
+                        || value.includes("무통장")
+                        || value.includes("간편")
+                    )
+                    .slice(0, 30);
+            }""")
+            print(f"      [DEBUG] 결제 페이지 input: {inputs}")
+            print(f"      [DEBUG] 결제 페이지 버튼/텍스트: {buttons}")
+        except Exception as exc:
+            print(f"      [DEBUG] 결제 페이지 디버그 실패: {type(exc).__name__}")
+
+    async def _click_text_candidates(self, texts: list[str], desc: str) -> bool:
+        """페이지 내에서 후보 텍스트를 포함하는 클릭 가능한 요소를 찾는다."""
+        for text in texts:
+            selectors = [
+                f'button:has-text("{text}")',
+                f'label:has-text("{text}")',
+                f'[role="button"]:has-text("{text}")',
+                f'text={text}',
+            ]
+
+            for selector in selectors:
+                try:
+                    el = await self.page.query_selector(selector)
+                    if not el or not await el.is_visible():
+                        continue
+                    await el.scroll_into_view_if_needed()
+                    await asyncio.sleep(0.1)
+                    box = await el.bounding_box()
+                    if box:
+                        print(f"      클릭: {desc}")
+                        await self.mouse.click_at(
+                            box["x"] + box["width"] / 2,
+                            box["y"] + box["height"] / 2,
+                        )
+                    else:
+                        print(f"      클릭(force): {desc}")
+                        await el.click(force=True)
+                    return True
+                except Exception:
+                    continue
+
+            try:
+                clicked = await self.page.evaluate("""(targetText) => {
+                    const isVisible = (el) => {
+                        if (!el) return false;
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        return style.display !== "none"
+                            && style.visibility !== "hidden"
+                            && rect.width > 0
+                            && rect.height > 0;
+                    };
+
+                    const candidates = [...document.querySelectorAll("button, label, [role='button'], div, span")];
+                    const match = candidates.find(el =>
+                        isVisible(el) && (el.textContent || "").includes(targetText)
+                    );
+                    if (!match) return false;
+
+                    const clickable = match.closest("button, label, [role='button']") || match;
+                    clickable.click();
+                    return true;
+                }""", text)
+                if clicked:
+                    print(f"      클릭(JS): {desc}")
+                    return True
+            except Exception:
+                pass
+
+        return False
 
     # ================================================================
     # Step 7: 예약자 정보 입력 + 결제
@@ -996,20 +1295,52 @@ class TruveMacro:
         self._be.api_call_sequence.append("payment")
         # 결제 페이지에서는 dismiss 안 함 (결제 모달 오닫기 방지)
 
+        ready = await self._wait_for_payment_form_ready()
+        if not ready:
+            await self._debug_payment_page()
+            raise RuntimeError("결제 페이지 폼이 준비되지 않음")
+
         # ── 1. 예약자 정보 입력 ──
         print(f"      [예약자 정보]")
 
         fields = [
-            ("name", applicant["name"], "이름"),
-            ("birth", applicant["birth"], "생년월일"),
-            ("email", applicant["email"], "이메일"),
-            ("phone", applicant["phone"], "전화번호"),
+            (
+                ['input[name="name"]', 'input[id="name"]', 'input[placeholder*="홍길동"]',
+                 'input[autocomplete="name"]', 'input[type="text"]'],
+                ["name", "이름", "홍길동"],
+                applicant["name"],
+                "이름",
+            ),
+            (
+                ['input[name="birth"]', 'input[id="birth"]', 'input[placeholder*="1999"]',
+                 'input[maxlength="8"]', 'input[inputmode="numeric"]'],
+                ["birth", "생년월일", "1999"],
+                applicant["birth"],
+                "생년월일",
+            ),
+            (
+                ['input[name="email"]', 'input[id="email"]', 'input[type="email"]',
+                 'input[placeholder*="@"]'],
+                ["email", "이메일", "mail", "@"],
+                applicant["email"],
+                "이메일",
+            ),
+            (
+                ['input[name="phone"]', 'input[id="phone"]', 'input[type="tel"]',
+                 'input[inputmode="tel"]', 'input[placeholder*="010"]'],
+                ["phone", "전화", "휴대폰", "010"],
+                applicant["phone"],
+                "전화번호",
+            ),
         ]
 
-        for field_name, value, label in fields:
-            display = mask_email(value) if field_name == "email" else value
+        for selectors, keywords, value, label in fields:
+            display = mask_email(value) if label == "이메일" else value
             print(f"      {label}: {display}")
-            await self._fill_form_field(f'input[name="{field_name}"]', value, label)
+            ok = await self._fill_form_field(selectors, value, label, keywords)
+            if not ok:
+                await self._debug_payment_page()
+                raise RuntimeError(f"{label} 입력 실패")
             await self._delay()
 
         # 사람 시뮬: 입력 후 스크롤
@@ -1018,19 +1349,10 @@ class TruveMacro:
 
         # ── 2. 티켓 수령 방법 ──
         print(f"      [수령방법] 현장수령")
-        try:
-            await self._click_selector('text=현장수령', "현장수령 선택")
-        except Exception:
-            try:
-                await self.page.evaluate("""() => {
-                    const els = [...document.querySelectorAll('*')];
-                    const match = els.find(el =>
-                        el.textContent.includes('현장수령') && el.offsetParent !== null
-                    );
-                    if (match) match.click();
-                }""")
-            except Exception:
-                pass
+        receipt_ok = await self._click_text_candidates(["현장수령", "현장 수령"], "현장수령 선택")
+        if not receipt_ok:
+            await self._debug_payment_page()
+            raise RuntimeError("현장수령 선택 실패")
         await self._delay()
 
         # ── 3. 결제수단 선택 ──
@@ -1043,22 +1365,15 @@ class TruveMacro:
             pay_desc = "무통장 입금 (은행선택/소득공제는 Toss에서 처리)"
 
         print(f"      [결제수단] {pay_desc}")
-        try:
-            await self._click_selector(f'text={pay_label}', f"{pay_label} 선택")
-        except Exception:
-            # 폴백: JS로 텍스트 매칭 후 강제 클릭
-            try:
-                await self.page.evaluate(f"""() => {{
-                    const els = [...document.querySelectorAll('*')];
-                    const match = els.find(el =>
-                        el.textContent.includes('{pay_label}') &&
-                        el.offsetParent !== null
-                    );
-                    if (match) match.click();
-                }}""")
-                print(f"      -> {pay_label} (JS 클릭)")
-            except Exception:
-                pass
+        method_candidates = (
+            ["간편 결제", "간편결제", "카드 결제"]
+            if pay_method == "CARD"
+            else ["무통장 입금", "무통장입금"]
+        )
+        method_ok = await self._click_text_candidates(method_candidates, f"{pay_label} 선택")
+        if not method_ok:
+            await self._debug_payment_page()
+            raise RuntimeError(f"{pay_label} 선택 실패")
         await self._delay()
 
         # 사람 시뮬: 결제수단 선택 후 스크롤
@@ -1068,24 +1383,13 @@ class TruveMacro:
         # ── 4. 약관 동의 ──
         # 무조건 "전체 동의"만 누름 (개별 먼저 누르면 토글 꼬임)
         print(f"      [약관 동의]")
-        try:
-            await self._click_selector('text=전체 동의', "전체 동의")
+        agreed = await self._click_text_candidates(
+            ["전체 동의", "이용약관 전체 동의", "전체동의"], "전체 동의"
+        )
+        if agreed:
             print(f"      -> 전체 동의 체크 완료")
-        except Exception:
-            # 폴백: JS로 전체 동의 클릭
-            try:
-                await self.page.evaluate("""() => {
-                    const els = [...document.querySelectorAll('*')];
-                    const btn = els.find(el =>
-                        el.textContent.includes('전체 동의') &&
-                        el.offsetParent !== null &&
-                        el.textContent.length < 20
-                    );
-                    if (btn) btn.click();
-                }""")
-                print(f"      -> 전체 동의 (JS)")
-            except Exception:
-                print(f"      [!] 전체 동의 실패")
+        else:
+            await self._check_agreements_individually()
 
         await self._delay()
 
@@ -1106,11 +1410,16 @@ class TruveMacro:
         print(f"      [결제] 최종 결제 버튼 클릭")
         try:
             # "총 N원 결제하기" 버튼 (bg-[#F93E4B])
-            await self._click_selector(
-                'button:has-text("결제하기")',
-                "최종 결제 버튼"
+            clicked = await self._click_text_candidates(
+                ["결제하기", "총", "결제"], "최종 결제 버튼"
             )
+            if not clicked:
+                await self._click_selector(
+                    'button:has-text("결제하기")',
+                    "최종 결제 버튼"
+                )
         except Exception as e:
+            await self._debug_payment_page()
             print(f"      [!] 결제 버튼 클릭 실패: {type(e).__name__}")
 
         # Toss Payments 모달/iframe 로딩 대기
@@ -1125,48 +1434,39 @@ class TruveMacro:
 
     async def _get_toss_frame(self):
         """
-        Toss SDK 감지 - 최대 10초 대기하며 반복 탐색.
-        iframe / 새 탭 / 리다이렉트 / 현재 페이지 내 렌더링 전부 대응.
+        Toss SDK는 iframe 또는 새 창(팝업)으로 열림.
+        두 가지 모두 시도하여 Toss 결제 화면에 접근한다.
         """
-        for attempt in range(10):  # 1초 간격 10회 = 최대 10초
-            # 1. iframe
-            for frame in self.page.frames:
-                url = frame.url
-                if "tosspayments" in url or "toss.im" in url or "brandpay" in url or "payment-gateway" in url:
-                    print(f"      [Toss] iframe 감지: {url[:60]}...")
-                    return frame
+        # 방법 1: iframe으로 열린 경우
+        for frame in self.page.frames:
+            url = frame.url
+            if "tosspayments" in url or "toss" in url or "brandpay" in url:
+                print(f"      [Toss] iframe 감지: {url[:60]}...")
+                return frame
 
-            # 2. 새 탭/팝업
-            for p in self.context.pages:
-                if p != self.page:
-                    url = p.url
-                    if "toss" in url or "payment" in url:
-                        print(f"      [Toss] 새 탭 감지: {url[:60]}...")
-                        return p
+        # 방법 2: 새 팝업 창으로 열린 경우
+        pages = self.context.pages
+        for p in pages:
+            if p != self.page and ("toss" in p.url or "tosspayments" in p.url):
+                print(f"      [Toss] 팝업 창 감지: {p.url[:60]}...")
+                return p
 
-            # 3. 현재 페이지가 Toss로 리다이렉트됨
-            if "toss" in self.page.url or "payment-gateway" in self.page.url:
-                print(f"      [Toss] 리다이렉트 감지: {self.page.url[:60]}...")
-                return self.page
+        # 방법 3: 새 창이 열릴 때까지 잠시 대기
+        try:
+            new_page = await self.context.wait_for_event("page", timeout=5000)
+            if "toss" in new_page.url:
+                print(f"      [Toss] 새 창 감지: {new_page.url[:60]}...")
+                return new_page
+        except Exception:
+            pass
 
-            # 4. 현재 페이지 내 Toss 요소
-            toss_el = await self.page.query_selector(
-                'iframe[src*="toss"], iframe[src*="payment"], [class*="toss"], [id*="toss"]'
-            )
-            if toss_el:
-                tag = await toss_el.evaluate("el => el.tagName.toLowerCase()")
-                if tag == "iframe":
-                    frame = await toss_el.content_frame()
-                    if frame:
-                        print(f"      [Toss] iframe 요소 감지")
-                        return frame
-                print(f"      [Toss] 현재 페이지 내 감지")
-                return self.page
-
-            if attempt < 9:
-                await asyncio.sleep(1)
-                if attempt % 3 == 2:
-                    print(f"      [Toss] 대기 중... ({attempt+1}초)")
+        # 방법 4: 현재 페이지에서 Toss UI가 직접 렌더링된 경우
+        toss_el = await self.page.query_selector(
+            '[class*="toss"], [id*="toss"], [data-testid*="toss"]'
+        )
+        if toss_el:
+            print(f"      [Toss] 현재 페이지 내 Toss 엘리먼트 감지")
+            return self.page
 
         return None
 
@@ -1181,7 +1481,7 @@ class TruveMacro:
         [무통장 입금 (VIRTUAL_ACCOUNT)]
           - 입금할 은행 선택 (국민, 신한, 우리, 하나 등)
           - 입금자명 입력
-          - 현금영수증: 소득공제 / 지출증빙 / 미발행 선택
+          - 현금영수증: 소득공제 / 지출증빙 / 발급안함 선택
           - 소득공제 선택 시: 휴대폰번호 입력
           - 결제하기 버튼 클릭
         """
@@ -1190,33 +1490,11 @@ class TruveMacro:
 
         toss = await self._get_toss_frame()
         if not toss:
-            print(f"      [!] Toss SDK 10초 대기했으나 감지 실패")
-            print(f"      [!] 현재 URL: {self.page.url}")
-            print(f"      [!] frames: {[f.url[:50] for f in self.page.frames]}")
-            print(f"      [!] pages: {[p.url[:50] for p in self.context.pages]}")
+            print(f"      [!] Toss SDK 화면을 찾을 수 없음 (iframe/팝업/직접 렌더링 없음)")
+            print(f"      [!] 결제 화면이 열리지 않았거나 리다이렉트 방식일 수 있음")
             return
 
-        # ── Toss iframe 내부 폼 로딩 대기 ──
-        # iframe은 감지됐지만 내부 콘텐츠(select/input)가 아직 로딩 안 됐을 수 있음
-        print(f"      [Toss] 폼 로딩 대기...")
-        for wait_i in range(15):  # 최대 15초
-            try:
-                form_count = await toss.evaluate("""() => {
-                    const s = document.querySelectorAll('select');
-                    const i = document.querySelectorAll('input');
-                    const b = document.querySelectorAll('button');
-                    return s.length + i.length + b.length;
-                }""")
-                if form_count >= 2:  # select + input + button 최소 2개
-                    print(f"      [Toss] 폼 로딩 완료 ({form_count}개 요소, {wait_i+1}초)")
-                    break
-            except Exception:
-                pass
-            await asyncio.sleep(1)
-        else:
-            print(f"      [!] Toss 폼 15초 대기했으나 요소 부족")
-
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(1)
 
         if pay_method == "VIRTUAL_ACCOUNT":
             await self._toss_virtual_account(toss, applicant)
@@ -1354,225 +1632,188 @@ class TruveMacro:
 
         return False
 
+    async def _toss_click_any_text(self, toss, texts: list[str], label: str) -> bool:
+        """여러 후보 텍스트 중 하나를 찾아 클릭."""
+        for text in texts:
+            if await self._toss_click_text(toss, text, f"{label} ({text})"):
+                return True
+        return False
+
+    async def _toss_select_receipt_option(self, toss) -> bool:
+        """현금영수증을 발급안함으로 선택한다."""
+        aliases = ["발급안함", "미발행", "신청안함", "발행안함", "안 함", "안함", "미신청"]
+        trigger_texts = ["소득공제용(휴대폰)", "현금영수증", "발급안함", "미발행"]
+        selected_by_select = False
+
+        await self._toss_click_any_text(toss, trigger_texts, "현금영수증 선택창 열기")
+        await asyncio.sleep(0.5)
+
+        try:
+            select = await toss.query_selector('select[name="cashReceiptCode"], select[id*="cashReceipt"], select')
+            if select and await select.is_visible():
+                options = await select.evaluate("""(el) => {
+                    return [...el.options].map(opt => ({
+                        value: opt.value || "",
+                        label: (opt.textContent || "").trim(),
+                    }));
+                }""")
+                for option in options:
+                    option_text = f"{option.get('label', '')} {option.get('value', '')}"
+                    if any(alias in option_text for alias in aliases):
+                        await select.select_option(value=option["value"])
+                        print(f"      -> 현금영수증 선택 완료 (select: {option['label'] or option['value']})")
+                        selected_by_select = True
+                        break
+        except Exception:
+            pass
+
+        clicked = await self._toss_click_any_text(toss, aliases, "현금영수증 선택")
+        await asyncio.sleep(0.5)
+        # 최종 "확인" 버튼은 필수 라디오/체크 이후에만 누른다.
+        # 여기서는 현금영수증 값만 선택하고 종료한다.
+        return selected_by_select or clicked
+
+    async def _toss_accept_required_agreements(self, toss) -> bool:
+        """
+        Toss iframe 하단의 필수 체크박스/라디오를 클릭한다.
+        """
+        try:
+            result = await toss.evaluate("""() => {
+                const isVisible = (el) => {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.display !== "none"
+                        && style.visibility !== "hidden"
+                        && rect.width > 0
+                        && rect.height > 0;
+                };
+                const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim();
+                const requiredHints = [
+                    "필수", "약관", "동의", "개인정보",
+                    "전자금융거래", "서비스 이용", "개인(신용)정보",
+                ];
+
+                const controls = [...document.querySelectorAll('input[type="checkbox"], input[type="radio"]')];
+                let clicked = 0;
+
+                for (const control of controls) {
+                    if (control.checked) continue;
+                    const label = control.closest("label");
+                    const scope = label || control.parentElement || control;
+                    if (!isVisible(scope) && !isVisible(control)) continue;
+
+                    const text = normalize(scope?.textContent || label?.textContent || "");
+                    if (!requiredHints.some(hint => text.includes(hint))) continue;
+
+                    if (label && isVisible(label)) {
+                        label.click();
+                    } else {
+                        control.click();
+                    }
+                    clicked += 1;
+                }
+
+                const remaining = [...document.querySelectorAll('input[type="checkbox"], input[type="radio"]')]
+                    .filter(control => {
+                        if (control.checked) return false;
+                        const label = control.closest("label");
+                        const scope = label || control.parentElement || control;
+                        if (!isVisible(scope) && !isVisible(control)) return false;
+                        const text = normalize(scope?.textContent || "");
+                        return requiredHints.some(hint => text.includes(hint));
+                    }).length;
+
+                return {clicked, remaining};
+            }""")
+        except Exception as exc:
+            print(f"      [!] Toss 필수 체크 처리 실패: {type(exc).__name__}")
+            return False
+
+        if result.get("clicked"):
+            print(f"      -> Toss 필수 체크 클릭: {result['clicked']}개")
+        return result.get("remaining", 0) == 0
+
+    async def _toss_click_final_confirm(self, toss) -> bool:
+        """
+        Toss 마지막 단계의 확인/결제 버튼은 필수 항목 체크가 끝난 뒤에만 누른다.
+        """
+        await asyncio.sleep(0.5)
+        btn_texts = ["확인", "결제하기", "입금하기", "동의하고 결제하기"]
+        for txt in btn_texts:
+            result = await self._toss_click_text(toss, txt, "Toss 최종 확인")
+            if result:
+                return True
+        return False
+
     async def _toss_virtual_account(self, toss, applicant: dict):
         """
         Toss SDK - 무통장 입금 처리
-        내부 구조를 모르므로 폼 요소를 순서대로 전부 처리하는 방식.
-        select → input → radio/checkbox → button 순회.
+        1) 은행 선택
+        2) 입금자명 입력
+        3) 현금영수증 (소득공제/지출증빙/발급안함)
+        4) iframe 하단 필수 체크
+        5) 결제하기 클릭
         """
         bank = self.booking.get("bank", "국민")
         depositor = applicant.get("name", "테스트봇")
-        phone = applicant.get("phone", "01012345678")
+        cash_receipt = self.booking.get("cash_receipt", "발급안함")
 
         print(f"      [무통장 입금]")
 
-        # ── 0. Toss iframe 내부 폼 구조 디버그 ──
-        try:
-            debug = await toss.evaluate("""() => {
-                const selects = [...document.querySelectorAll('select')];
-                const inputs = [...document.querySelectorAll('input')];
-                const buttons = [...document.querySelectorAll('button')];
-                const labels = [...document.querySelectorAll('label')];
-                return {
-                    selects: selects.map(s => ({
-                        name: s.name, id: s.id,
-                        options: [...s.options].map(o => o.text).slice(0, 5),
-                        visible: s.offsetParent !== null,
-                    })),
-                    inputs: inputs.map(i => ({
-                        type: i.type, name: i.name, placeholder: i.placeholder,
-                        inputmode: i.inputMode, visible: i.offsetParent !== null,
-                    })),
-                    buttons: buttons.map(b => ({
-                        text: b.textContent.trim().substring(0, 30),
-                        type: b.type, visible: b.offsetParent !== null,
-                    })),
-                    labels: labels.map(l => l.textContent.trim().substring(0, 30)),
-                    checkboxes: inputs.filter(i => i.type === 'checkbox').map(c => ({
-                        checked: c.checked, visible: c.offsetParent !== null,
-                        label: (c.closest('label') || c.parentElement)?.textContent?.trim().substring(0, 30),
-                    })),
-                };
-            }""")
-            print(f"      [DEBUG] selects: {debug.get('selects', [])}")
-            print(f"      [DEBUG] inputs: {debug.get('inputs', [])}")
-            print(f"      [DEBUG] checkboxes: {debug.get('checkboxes', [])}")
-            print(f"      [DEBUG] buttons: {[b['text'] for b in debug.get('buttons', []) if b.get('visible')]}")
-            print(f"      [DEBUG] labels: {debug.get('labels', [])[:10]}")
-        except Exception as e:
-            print(f"      [DEBUG] 폼 구조 분석 실패: {type(e).__name__}")
-
-        # ── 1. 모든 select 드롭다운 처리 (은행 선택 등) ──
+        # ── 1. 은행 선택 ──
         print(f"      은행 선택: {bank}")
         await self._delay()
+
+        # select 드롭다운 형태
         try:
-            selects = await toss.query_selector_all('select')
-            for sel in selects:
-                if await sel.is_visible():
-                    # 은행 이름으로 선택 시도
-                    try:
-                        await sel.select_option(label=bank)
-                        print(f"      -> 은행 선택 완료")
-                    except Exception:
-                        # 첫 번째 옵션이 아닌 아무거나 선택
-                        try:
-                            options = await sel.query_selector_all('option')
-                            if len(options) > 1:
-                                val = await options[1].get_attribute('value')
-                                await sel.select_option(value=val)
-                                print(f"      -> 은행 선택 완료 (첫 번째)")
-                        except Exception:
-                            pass
-        except Exception:
+            bank_select = await toss.query_selector('select')
+            if bank_select:
+                await bank_select.select_option(label=bank)
+                print(f"      -> 은행 선택 완료 (select)")
+            else:
+                # 버튼/텍스트 형태
+                await self._toss_click_text(toss, bank, f"은행 {bank}")
+        except Exception as e:
+            # 폴백: 텍스트 매칭
             await self._toss_click_text(toss, bank, f"은행 {bank}")
         await self._delay()
 
-        # ── 2. 모든 text input 처리 (입금자명, 전화번호 등) ──
-        try:
-            inputs = await toss.query_selector_all('input[type="text"], input[type="tel"], input:not([type])')
-            visible_inputs = []
-            for inp in inputs:
-                try:
-                    if await inp.is_visible():
-                        visible_inputs.append(inp)
-                except Exception:
-                    pass
-
-            # 보이는 input 순서대로: 첫 번째=입금자명, 두 번째=전화번호
-            for idx, inp in enumerate(visible_inputs):
-                inp_type = await inp.get_attribute('type') or ''
-                inp_mode = await inp.get_attribute('inputmode') or ''
-                placeholder = await inp.get_attribute('placeholder') or ''
-
-                if inp_type == 'tel' or inp_mode in ('tel', 'numeric') or '010' in placeholder or '번호' in placeholder:
-                    # 전화번호 필드
-                    print(f"      전화번호 입력: {phone}")
-                    await self._toss_type_into(toss, inp, phone, "전화번호")
-                else:
-                    # 입금자명 또는 기타 텍스트
-                    print(f"      입금자명 입력: {depositor}")
-                    await self._toss_type_into(toss, inp, depositor, "입금자명")
-        except Exception as e:
-            print(f"      [!] input 처리 실패: {type(e).__name__}")
+        # ── 2. 입금자명 입력 ──
+        print(f"      입금자명: {depositor}")
+        await self._toss_fill_input(toss, [
+            'input[name*="depositor"]',
+            'input[name*="name"]',
+            'input[placeholder*="입금자"]',
+            'input[placeholder*="이름"]',
+            'input[placeholder*="성명"]',
+            'input:not([type="tel"]):not([type="email"]):not([inputmode="numeric"])',
+        ], depositor, "입금자명")
         await self._delay()
 
-        # ── 3. 현금영수증: select 드롭다운이면 미발행 선택 ──
-        print(f"      현금영수증: 미발행 시도")
-        try:
-            # 두 번째 select가 현금영수증 유형일 수 있음
-            selects = await toss.query_selector_all('select')
-            for sel in selects:
-                if await sel.is_visible():
-                    try:
-                        # "미발행" 옵션 시도
-                        await sel.select_option(label="미발행")
-                        print(f"      -> 현금영수증 미발행 (select)")
-                        break
-                    except Exception:
-                        try:
-                            await sel.select_option(label="신청안함")
-                            print(f"      -> 현금영수증 신청안함 (select)")
-                            break
-                        except Exception:
-                            pass
-        except Exception:
-            pass
+        # ── 3. 현금영수증: 발급안함 선택 ──
+        print(f"      현금영수증: {cash_receipt}")
+        receipt_ok = await self._toss_select_receipt_option(toss)
+        if not receipt_ok:
+            raise RuntimeError("현금영수증 '발급안함' 선택 실패")
 
-        # 라디오 버튼 형태일 수도 있음
-        no_receipt_texts = ["미발행", "신청안함", "발행안함", "안 함"]
-        for txt in no_receipt_texts:
-            result = await self._toss_click_text(toss, txt, f"현금영수증 {txt}")
-            if result:
-                break
         await self._delay()
 
-        # ── 4. 모든 체크박스 체크 (약관 동의 등) ──
-        print(f"      약관/동의 체크")
-        try:
-            checkboxes = await toss.query_selector_all('input[type="checkbox"]')
-            for cb in checkboxes:
-                try:
-                    if await cb.is_visible():
-                        checked = await cb.is_checked()
-                        if not checked:
-                            # 체크박스 자체 또는 부모 label 클릭
-                            label = await cb.evaluate("el => el.closest('label')")
-                            if label:
-                                box = await cb.bounding_box()
-                                if box:
-                                    await self.mouse.click_at(box["x"] + 10, box["y"] + 10)
-                                else:
-                                    await cb.click(force=True)
-                            else:
-                                await cb.click(force=True)
-                            await asyncio.sleep(0.2)
-                            print(f"      -> 체크박스 체크")
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        # label 클릭으로도 시도 (체크박스가 숨겨진 경우)
-        try:
-            await toss.evaluate("""() => {
-                const labels = document.querySelectorAll('label');
-                for (const label of labels) {
-                    const cb = label.querySelector('input[type="checkbox"]');
-                    if (cb && !cb.checked) {
-                        label.click();
-                    }
-                }
-            }""")
-        except Exception:
-            pass
+        # ── 4. iframe 하단 필수 체크 ──
+        print(f"      [Toss] 하단 필수 체크")
+        checked = await self._toss_accept_required_agreements(toss)
+        if not checked:
+            raise RuntimeError("Toss 필수 체크 미완료")
         await self._delay()
 
-        # ── 5. 결제하기 버튼 ──
-        print(f"      [Toss] 최종 결제 버튼 클릭")
-        btn_texts = ["결제하기", "확인", "입금하기", "동의하고 결제하기"]
-        for txt in btn_texts:
-            result = await self._toss_click_text(toss, txt, "Toss 결제")
-            if result:
-                break
+        # ── 5. 결제하기 / 확인 버튼 ──
+        print(f"      [Toss] 필수 체크 후 최종 확인 버튼 클릭")
+        final_clicked = await self._toss_click_final_confirm(toss)
+        if not final_clicked:
+            raise RuntimeError("Toss 최종 확인 버튼 클릭 실패")
 
         await asyncio.sleep(3)
         print(f"      -> 무통장 입금 처리 완료")
-
-    async def _toss_type_into(self, toss, element, value: str, label: str):
-        """Toss iframe 내 input 요소에 값 입력 (여러 방법)"""
-        try:
-            await element.focus()
-            await asyncio.sleep(0.1)
-            await element.press("Control+A")
-            await element.press("Backspace")
-            await asyncio.sleep(0.1)
-
-            # 한 글자씩 press
-            for char in value:
-                await element.press(char)
-                await asyncio.sleep(0.02)
-
-            current = await element.input_value()
-            if current and len(current) >= len(value) - 1:
-                print(f"      -> {label} 입력 완료")
-                return
-
-            # fill 폴백
-            await element.fill(value)
-            print(f"      -> {label} 입력 완료 (fill)")
-        except Exception:
-            try:
-                await element.evaluate(f"""(el) => {{
-                    const s = Object.getOwnPropertyDescriptor(
-                        window.HTMLInputElement.prototype, 'value'
-                    ).set;
-                    s.call(el, '{value}');
-                    el.dispatchEvent(new Event('input', {{bubbles:true}}));
-                    el.dispatchEvent(new Event('change', {{bubbles:true}}));
-                }}""")
-                print(f"      -> {label} 입력 완료 (JS)")
-            except Exception:
-                print(f"      [!] {label} 입력 실패")
 
     async def _toss_card(self, toss):
         """
@@ -1609,55 +1850,103 @@ class TruveMacro:
         await asyncio.sleep(3)
         print(f"      -> 카드 결제 처리 완료")
 
-    async def _fill_form_field(self, selector: str, value: str, label: str):
+    async def _fill_form_field(self, selectors: list[str], value: str,
+                               label: str, keywords: list[str] = None) -> bool:
         """
         결제 폼 필드에 값 입력. inputMode="tel" 등 특수 필드 대응.
         1차: 클릭 → type
         2차: fill
         3차: JS nativeInputValueSetter + React 이벤트
         """
-        try:
-            el = await self.page.wait_for_selector(selector, timeout=5000)
+        element = None
 
-            await el.click(force=True)
-            await asyncio.sleep(0.1)
-            await self.page.keyboard.press("Control+A")
-            await self.page.keyboard.press("Backspace")
-            await asyncio.sleep(0.1)
-
-            # 방법 1: type
+        for selector in selectors:
             try:
-                await el.type(value, delay=30)
-                current = await el.input_value()
-                if current == value:
-                    return
+                candidate = await self.page.query_selector(selector)
+                if candidate and await candidate.is_visible():
+                    element = candidate
+                    break
+            except Exception:
+                continue
+
+        if not element and keywords:
+            try:
+                for candidate in await self.page.query_selector_all("input, textarea"):
+                    try:
+                        if not await candidate.is_visible():
+                            continue
+                        info = await candidate.evaluate("""(el) => ({
+                            name: el.getAttribute("name") || "",
+                            id: el.id || "",
+                            placeholder: el.getAttribute("placeholder") || "",
+                            type: el.getAttribute("type") || "",
+                            autocomplete: el.getAttribute("autocomplete") || "",
+                            label: [...(el.labels || [])].map(label => label.textContent || "").join(" "),
+                        })""")
+                        haystack = " ".join(str(info.get(key, "")).lower() for key in info)
+                        if any(keyword.lower() in haystack for keyword in keywords):
+                            element = candidate
+                            break
+                    except Exception:
+                        continue
             except Exception:
                 pass
 
-            # 방법 2: fill
+        if not element:
+            print(f"      [!] {label} 입력 필드 탐색 실패")
+            return False
+
+        methods = [
+            ("type", self._fill_form_field_by_type),
+            ("fill", self._fill_form_field_by_fill),
+            ("js", self._fill_form_field_by_js),
+        ]
+
+        for method_name, method in methods:
             try:
-                await el.fill(value)
-                current = await el.input_value()
+                ok = await method(element, value)
+                if not ok:
+                    continue
+                current = await element.input_value()
                 if current == value:
-                    return
+                    print(f"      -> {label} 입력 완료 ({method_name})")
+                    return True
             except Exception:
-                pass
+                continue
 
-            # 방법 3: JS 강제
-            await self.page.evaluate(f"""(sel) => {{
-                const el = document.querySelector(sel);
-                if (!el) return;
-                const setter = Object.getOwnPropertyDescriptor(
-                    window.HTMLInputElement.prototype, 'value'
-                ).set;
-                setter.call(el, '{value}');
-                el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                el.dispatchEvent(new Event('change', {{bubbles: true}}));
-            }}""", selector)
-            print(f"      -> {label} (JS 입력)")
+        print(f"      [!] {label} 입력 실패")
+        return False
 
-        except Exception as e:
-            print(f"      [!] {label} 입력 실패: {type(e).__name__}")
+    async def _fill_form_field_by_type(self, element, value: str) -> bool:
+        await element.click(force=True)
+        await asyncio.sleep(0.1)
+        await self.page.keyboard.press("Control+A")
+        await self.page.keyboard.press("Backspace")
+        await asyncio.sleep(0.1)
+        await element.type(value, delay=30)
+        return True
+
+    async def _fill_form_field_by_fill(self, element, value: str) -> bool:
+        await element.click(force=True)
+        await element.fill(value)
+        return True
+
+    async def _fill_form_field_by_js(self, element, value: str) -> bool:
+        await element.evaluate("""(el, nextValue) => {
+            const proto = el.tagName === "TEXTAREA"
+                ? window.HTMLTextAreaElement.prototype
+                : window.HTMLInputElement.prototype;
+            const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
+            if (descriptor && descriptor.set) {
+                descriptor.set.call(el, nextValue);
+            } else {
+                el.value = nextValue;
+            }
+            el.dispatchEvent(new Event("input", {bubbles: true}));
+            el.dispatchEvent(new Event("change", {bubbles: true}));
+            el.dispatchEvent(new Event("blur", {bubbles: true}));
+        }""", value)
+        return True
 
     async def _check_agreements_individually(self):
         """
@@ -1841,22 +2130,24 @@ class TruveMacro:
                 if not seats_ok:
                     print(f"\n  [!] 좌석 선택 실패 — 결제 진행 불가, 플로우 중단")
                 else:
-                    # 좌석 패널에 실제로 선택된 좌석이 있는지 확인
-                    has_selected = await self.page.evaluate("""() => {
-                        const text = document.body.innerText || '';
-                        // "선택 좌석 N / 4" 또는 결제 금액이 0이 아닌지 확인
-                        const match = text.match(/선택\\s*좌석\\s*(\\d+)/);
-                        if (match && parseInt(match[1]) > 0) return true;
-                        // "원 결제하기" 버튼에 금액이 있는지
-                        const payBtn = text.match(/(\\d[\\d,]+)원\\s*결제/);
-                        if (payBtn && parseInt(payBtn[1].replace(/,/g,'')) > 0) return true;
-                        return false;
-                    }""")
+                    has_selected = await self._wait_for_booking_state(
+                        min_selected=0,
+                        require_amount=True,
+                        timeout_ms=12000,
+                        label="좌석 선점 반영",
+                    )
 
                     if not has_selected:
-                        print(f"\n  [!] 좌석 선점 확인 실패 (선택 좌석 0석) — 재시도")
+                        print(f"\n  [!] 좌석 선점 확인 실패 (선택 좌석/금액 미반영) — 재시도")
                         # 한번 더 좌석 선택 시도
                         seats_ok = await self.step5_select_seats(show_id)
+                        if seats_ok:
+                            seats_ok = await self._wait_for_booking_state(
+                                min_selected=0,
+                                require_amount=True,
+                                timeout_ms=12000,
+                                label="좌석 선점 재시도 반영",
+                            )
 
                     if seats_ok:
                         await self.step6_to_payment()
