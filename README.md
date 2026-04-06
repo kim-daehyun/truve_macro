@@ -193,7 +193,7 @@ python main.py \
   --schedule-time 19:00 \
   --applicant-name 홍길동 \
   --applicant-birth 19990101 \
-  --applicant-phone 01012345678
+  --applicant-phone 01062971082
 ```
 
 ---
@@ -223,7 +223,7 @@ python main.py \
 |------|------|-------|
 | `--applicant-name` | 예약자 이름 | `테스트봇` |
 | `--applicant-birth` | 생년월일 (YYYYMMDD) | `20000101` |
-| `--applicant-phone` | 전화번호 (- 제외 11자리) | `01012345678` |
+| `--applicant-phone` | 전화번호 (- 제외 11자리) | `01062971082` |
 
 ### 좌석 설정
 

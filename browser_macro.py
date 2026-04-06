@@ -929,21 +929,45 @@ class TruveMacro:
         cx, cy = box["x"], box["y"]
         cw, ch = box["width"], box["height"]
 
-        selected = 0
-        for i in range(max_seats):
-            # 좌석 영역 (상단 30~60% 범위에 1층 좌석 분포)
-            sx = cx + cw * random.uniform(0.2, 0.8)
-            sy = cy + ch * random.uniform(0.15, 0.55)
+        # 동일 스텝 안에서 빠르게 여러 배치를 시도해, run 레벨 재시도로 넘어가기 전 해결한다.
+        batch_regions = [
+            ((0.22, 0.78), (0.16, 0.54)),
+            ((0.30, 0.70), (0.20, 0.50)),
+            ((0.15, 0.85), (0.14, 0.58)),
+        ]
+        quick_wait = 1800 if self.scenario == "turbo" or self.level <= 3 else 3000
 
-            await self.mouse.click_at(sx, sy)
-            selected += 1
-            self._be.seat_hold_attempts += 1
-            print(f"      좌석 {selected}/{max_seats} 클릭 (x={sx:.0f}, y={sy:.0f})")
-            # 좌석 반영은 너무 빠르게 넘기면 누락되는 경우가 있어 별도 안정화 대기
-            await asyncio.sleep(random.uniform(0.35, 0.7))
+        for batch_idx, ((x_min, x_max), (y_min, y_max)) in enumerate(batch_regions, start=1):
+            selected = 0
+            for i in range(max_seats):
+                sx = cx + cw * random.uniform(x_min, x_max)
+                sy = cy + ch * random.uniform(y_min, y_max)
 
-        print(f"      -> 좌석 {selected}석 클릭 (좌표)")
-        return selected > 0
+                await self.mouse.click_at(sx, sy)
+                selected += 1
+                self._be.seat_hold_attempts += 1
+                print(f"      좌석 {selected}/{max_seats} 클릭 (x={sx:.0f}, y={sy:.0f})")
+
+                if self.scenario == "turbo" or self.level <= 3:
+                    await asyncio.sleep(random.uniform(0.12, 0.22))
+                else:
+                    await asyncio.sleep(random.uniform(0.3, 0.55))
+
+            print(f"      -> 좌석 {selected}석 클릭 (좌표, 배치 {batch_idx})")
+
+            reflected = await self._wait_for_booking_state(
+                min_selected=0,
+                require_amount=True,
+                timeout_ms=quick_wait,
+            )
+            if reflected:
+                return True
+
+            if batch_idx < len(batch_regions):
+                print(f"      [!] 좌석 반영 미확인 — 같은 스텝에서 빠른 재시도")
+                await asyncio.sleep(0.15 if self.scenario == "turbo" or self.level <= 3 else 0.4)
+
+        return True
 
     async def _read_booking_state(self) -> dict:
         """현재 페이지에서 선택 좌석 수와 결제 금액을 추정한다."""
@@ -1270,7 +1294,7 @@ class TruveMacro:
             - name (이름): placeholder "홍길동"
             - birth (생년월일): placeholder "19990129" (8자리)
             - email (이메일): placeholder "XXXX@naver.com"
-            - phone (전화번호): placeholder "01012345678" (11자리, - 제외)
+            - phone (전화번호): placeholder "01062971082" (11자리, - 제외)
 
           [티켓 수령 방법]
             - "현장수령" (value="NONE") — 현재 유일한 옵션
@@ -2094,7 +2118,7 @@ class TruveMacro:
                 "name": "테스트봇",
                 "birth": "20000101",
                 "email": account["email"],
-                "phone": "01012345678",
+                "phone": "01062971082",
             }
 
         print(f"\n{'='*60}")
@@ -2133,7 +2157,7 @@ class TruveMacro:
                     has_selected = await self._wait_for_booking_state(
                         min_selected=0,
                         require_amount=True,
-                        timeout_ms=12000,
+                        timeout_ms=3500 if self.scenario == "turbo" or self.level <= 3 else 12000,
                         label="좌석 선점 반영",
                     )
 
@@ -2145,7 +2169,7 @@ class TruveMacro:
                             seats_ok = await self._wait_for_booking_state(
                                 min_selected=0,
                                 require_amount=True,
-                                timeout_ms=12000,
+                                timeout_ms=3500 if self.scenario == "turbo" or self.level <= 3 else 12000,
                                 label="좌석 선점 재시도 반영",
                             )
 

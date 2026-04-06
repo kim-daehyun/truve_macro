@@ -281,7 +281,7 @@ def main():
     parser.add_argument("--password", default=None, help="로그인 비밀번호 (.env 권장)")
     parser.add_argument("--applicant-name", default="테스트봇", help="예약자 이름")
     parser.add_argument("--applicant-birth", default="20000101", help="예약자 생년월일")
-    parser.add_argument("--applicant-phone", default="01012345678", help="예약자 전화번호")
+    parser.add_argument("--applicant-phone", default="01062971082", help="예약자 전화번호")
     parser.add_argument("--output", default="./output", help="출력 디렉토리")
     parser.add_argument("--info", action="store_true", help="레벨 비교표 출력 후 종료")
     parser.add_argument("--retry", type=int, default=None, help="실패 시 재시도 횟수 (미지정시 레벨 기본값)")
