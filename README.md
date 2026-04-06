@@ -58,13 +58,13 @@ python main.py --email your@email.com --password 'yourpass'
 봇형 데이터 20회:
 
 ```bash
-python main.py --behavior-type bot --behavior-runs 20
+python main.py --behavior-type bot --behavior-runs 20 --email 'your_email' --password 'your_pw'
 ```
 
 사람형 데이터 10회:
 
 ```bash
-python main.py --behavior-type human --behavior-runs 10
+python main.py --behavior-type human --behavior-runs 10 --email 'your_email' --password 'your_pw'
 ```
 
 좌석 수를 매 run마다 1~4 랜덤으로:
