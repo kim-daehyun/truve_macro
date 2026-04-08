@@ -61,12 +61,12 @@ def print_behavior_info():
     print("  " + "-" * 72)
     print("  bot")
     print("    - 목표: 짧은 seatmap 체류, 적은 탐색, 높은 teleport 성향")
-    print("    - seatmap 체류시간: 1매 0.18~0.32초 / 2매 0.25~0.42초 / 3매 0.32~0.56초 / 4매 0.42~0.80초")
+    print("    - seatmap 체류시간: 1매 0.18~0.32초 / 2매 0.25~0.42초")
     print("    - queue polling / retry / 입력 속도도 전반적으로 더 공격적")
     print()
     print("  human")
     print("    - 목표: 긴 seatmap 체류, 많은 탐색, 낮은 teleport 성향")
-    print("    - seatmap 체류시간: 1매 1.0~1.85초 / 2매 1.5~2.7초 / 3매 2.05~3.6초 / 4매 2.7~4.7초")
+    print("    - seatmap 체류시간: 1매 1.05~1.85초 / 2매 1.55~2.7초")
     print("    - hover / pause / 곡선 이동 비중을 높여 사람형 분포를 만듦")
     print("  " + "-" * 72)
 
@@ -78,22 +78,23 @@ def resolve_behavior_profile(behavior_type: str) -> tuple[int, dict]:
             "typing_use_paste": False,
             "mouse_move_to_target": True,
             "scroll_enabled": True,
-            "action_delay_ms": (115, 300),
-            "typing_delay_ms": (14, 34),
-            "seat_select_delay_ms": (180, 720),
-            "hover_before_click_ms": (14, 65),
-            "queue_poll_ms": (950, 1850),
+            "action_delay_ms": (62, 165),
+            "typing_delay_ms": (7, 19),
+            "seat_select_delay_ms": (95, 400),
+            "hover_before_click_ms": (7, 34),
+            "queue_poll_ms": (620, 1150),
             "queue_ignore_server_interval": False,
             "retry_count": 1,
             "retry_delay_ms": (0, 0),
             "random_hesitation": False,
             "idle_pause_chance": 0.0,
             "idle_pause_ms": (0, 0),
-            "mouse_move_steps": 18,
-            "mouse_move_speed_ms": 6,
+            "mouse_move_steps": 14,
+            "mouse_move_speed_ms": 3,
             "mouse_curve": "human_like",
-            "mouse_jitter_px": 1.2,
-            "scroll_delay_ms": 90,
+            "mouse_jitter_px": 1.0,
+            "scroll_delay_ms": 70,
+            "seat_retry_limit": 3,
         }
 
     # 봇형: 기존보다 20~30% 더 빠르게
@@ -133,7 +134,7 @@ async def run_macro(base_url: str, profile_level: int, runs: int,
 
         run_booking_options = dict(booking_options)
         if seat_count_mode == "random":
-            run_booking_options["seat_count"] = random.randint(1, 4)
+            run_booking_options["seat_count"] = random.randint(1, 2)
         print(f"      이번 시도 좌석 수: {run_booking_options['seat_count']}매")
         applicant_for_run = dict(applicant)
 
@@ -159,6 +160,7 @@ async def run_macro(base_url: str, profile_level: int, runs: int,
             print(f"\n  Run {run_idx + 1} 결과:")
             print(f"    소요: {be_record.total_flow_duration_ms:.0f}ms")
             print(f"    요청간격 평균: {be_record.req_interval_mean_ms:.0f}ms")
+            print(f"    요청간격 CV: {be_record.req_interval_cv:.3f}")
             print(f"    마우스 이동: {fe_record.mouse_move_count}회")
             print(f"    클릭: {fe_record.click_count}회")
             print(f"    키입력: {fe_record.keystroke_count}회")
@@ -312,12 +314,12 @@ def main():
     )
     booking_group.add_argument(
         "--seat-count", type=int, default=2,
-        help="예매 매수 1~4 (기본: 2)",
+        help="예매 매수 1~2 (기본: 2)",
     )
     booking_group.add_argument(
         "--seat-count-mode", default="random",
         choices=["random", "fixed"],
-        help="좌석 매수 선택 방식 (random=매 run마다 1~4 랜덤, fixed=--seat-count 고정)",
+        help="좌석 매수 선택 방식 (random=매 run마다 1~2 랜덤, fixed=--seat-count 고정)",
     )
     booking_group.add_argument(
         "--pay-method", default="VIRTUAL_ACCOUNT",
@@ -376,7 +378,7 @@ def main():
     effective_runs = args.behavior_runs if args.behavior_runs is not None else args.runs
     print(f"  반복: {effective_runs}회")
     print(f"  공연: showId={args.show_id}")
-    seat_count_label = "1~4 랜덤" if args.seat_count_mode == "random" else f"{args.seat_count}매"
+    seat_count_label = "1~2 랜덤" if args.seat_count_mode == "random" else f"{args.seat_count}매"
     print(f"  좌석: {args.seat_grade.upper()} / {args.seat_section.upper()} / {seat_count_label}")
     if args.pay_method == "CARD":
         print(f"  결제: 카드 ({args.card_company})")

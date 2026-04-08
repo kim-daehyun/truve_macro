@@ -15,7 +15,7 @@ Truve 티켓팅 플로우를 자동으로 실행하면서, 매크로 탐지용 *
 - 지금은 `--behavior-type bot` 또는 `--behavior-type human`으로만 전체 흐름을 제어합니다.
 - `bot`은 더 짧은 체류시간, 적은 탐색, 높은 teleport 성향을 목표로 합니다.
 - `human`은 더 자연스러운 속도, 더 연속적인 마우스 이동, 더 긴 seatmap 체류를 목표로 합니다.
-- 좌석 수는 `--seat-count-mode random`이면 매 run마다 1~4석 랜덤으로 선택됩니다.
+- 좌석 수는 `--seat-count-mode random`이면 매 run마다 1~2석 랜덤으로 선택됩니다.
 
 ## 설치
 
@@ -67,7 +67,7 @@ python main.py --behavior-type bot --behavior-runs 20 --email 'your_email' --pas
 python main.py --behavior-type human --behavior-runs 10 --email 'your_email' --password 'your_pw'
 ```
 
-좌석 수를 매 run마다 1~4 랜덤으로:
+좌석 수를 매 run마다 1~2 랜덤으로:
 
 ```bash
 python main.py --behavior-type bot --behavior-runs 30 --seat-count-mode random
@@ -123,20 +123,16 @@ python main.py --behavior-type bot --behavior-runs 20 --tag batch-bot-001
 - 목적: 명확한 봇형 FE/BE 패턴 생성
 - 특징: 빠른 요청, 짧은 seatmap 체류, 적은 탐색, 높은 teleport 성향
 - seatmap 체류시간 목표:
-  - 1매: 약 `180~320ms`
-  - 2매: 약 `250~420ms`
-  - 3매: 약 `320~560ms`
-  - 4매: 약 `420~800ms`
+  - 1매: 약 `180~260ms`
+  - 2매: 약 `240~360ms`
 
 ### `human`
 
 - 목적: 실제 사용자에 가까운 자연스러운 FE/BE 패턴 생성
 - 특징: 더 자연스러운 타이핑, 연속적인 마우스 이동, 더 긴 seatmap 체류
 - seatmap 체류시간 목표:
-  - 1매: 약 `1000~1850ms`
-  - 2매: 약 `1500~2700ms`
-  - 3매: 약 `2050~3600ms`
-  - 4매: 약 `2700~4700ms`
+  - 1매: 약 `1050~1850ms`
+  - 2매: 약 `1550~2700ms`
 
 행동 타입 비교표는 아래 명령으로 확인할 수 있습니다.
 
@@ -177,7 +173,7 @@ python main.py --info
 |---|---|---|
 | `--seat-grade` | `VIP`, `R`, `S`, `A`, `any` | `any` |
 | `--seat-section` | 좌석 구역 문자열 | `any` |
-| `--seat-count` | 고정 좌석 수 1~4 | `2` |
+| `--seat-count` | 고정 좌석 수 1~2 | `2` |
 | `--seat-count-mode` | `random` 또는 `fixed` | `random` |
 
 ### 결제 옵션

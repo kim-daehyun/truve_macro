@@ -113,6 +113,7 @@ class BEDataRecord:
     req_intervals_ms: list = field(default_factory=list)
     req_interval_mean_ms: float = 0.0
     req_interval_std_ms: float = 0.0
+    req_interval_cv: float = 0.0
     req_interval_min_ms: float = 0.0
     req_interval_max_ms: float = 0.0
     queue_poll_intervals_ms: list = field(default_factory=list)
@@ -155,6 +156,8 @@ class BEDataRecord:
             self.req_interval_max_ms = max(self.req_intervals_ms)
             if len(self.req_intervals_ms) > 1:
                 self.req_interval_std_ms = statistics.stdev(self.req_intervals_ms)
+            if self.req_interval_mean_ms > 0:
+                self.req_interval_cv = self.req_interval_std_ms / self.req_interval_mean_ms
         if len(self.queue_poll_intervals_ms) > 0:
             self.queue_poll_interval_mean_ms = statistics.mean(self.queue_poll_intervals_ms)
         self.api_call_count = len(self.api_call_sequence)

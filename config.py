@@ -640,9 +640,9 @@ def build_booking_options(
             f"잘못된 좌석 구역: {seat_section} (허용: {', '.join(sorted(VALID_SEAT_SECTIONS))})"
         )
 
-    # 좌석 수 검증 (1~4석)
-    if not isinstance(seat_count, int) or seat_count < 1 or seat_count > 4:
-        raise ValueError(f"잘못된 좌석 수: {seat_count} (1~4)")
+    # 좌석 수 검증 (1~2석)
+    if not isinstance(seat_count, int) or seat_count < 1 or seat_count > 2:
+        raise ValueError(f"잘못된 좌석 수: {seat_count} (1~2)")
 
     # 결제 방식 검증
     pay_method = pay_method.upper()
