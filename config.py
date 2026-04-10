@@ -163,6 +163,9 @@ def mask_password(password: str) -> str:
 # ============================================================
 
 BASE_URL = validate_url(_get_env("TRUVE_BASE_URL", "https://front-nu-tawny.vercel.app"))
+# BASE_URL = validate_url(_get_env("TRUVE_BASE_URL", "https://www.truve.site/"))
+
+
 
 # [Rule 2] 크리덴셜은 환경변수에서만 로드 - 하드코딩 절대 금지
 def load_test_accounts() -> list[dict]:
@@ -614,7 +617,7 @@ _CASH_RECEIPT_ALIASES = {
 def build_booking_options(
     seat_grade: str = "any",
     seat_section: str = "any",
-    seat_count: int = 2,
+    seat_count: int = 1,
     pay_method: str = "CARD",
     bank: str = "국민",
     card_company: str = "삼성",
@@ -640,9 +643,9 @@ def build_booking_options(
             f"잘못된 좌석 구역: {seat_section} (허용: {', '.join(sorted(VALID_SEAT_SECTIONS))})"
         )
 
-    # 좌석 수 검증 (1~2석)
-    if not isinstance(seat_count, int) or seat_count < 1 or seat_count > 2:
-        raise ValueError(f"잘못된 좌석 수: {seat_count} (1~2)")
+    # 좌석 수 검증 (현재 버전은 1석 고정)
+    if not isinstance(seat_count, int) or seat_count != 1:
+        raise ValueError(f"잘못된 좌석 수: {seat_count} (현재 버전은 1석 고정)")
 
     # 결제 방식 검증
     pay_method = pay_method.upper()

@@ -133,8 +133,7 @@ async def run_macro(base_url: str, profile_level: int, runs: int,
         print(f"\n  --- Run {run_idx + 1}/{runs} (계정: {mask_email(account['email'])}) ---")
 
         run_booking_options = dict(booking_options)
-        if seat_count_mode == "random":
-            run_booking_options["seat_count"] = random.randint(1, 2)
+        run_booking_options["seat_count"] = 1
         print(f"      이번 시도 좌석 수: {run_booking_options['seat_count']}매")
         applicant_for_run = dict(applicant)
 
@@ -210,7 +209,7 @@ async def async_main(args):
     }
 
     # [Rule 1] 예매 부가 옵션 검증
-    default_seat_count = 2 if args.seat_count_mode == "random" else args.seat_count
+    default_seat_count = 1
     try:
         booking_options = build_booking_options(
             seat_grade=args.seat_grade,
@@ -313,13 +312,13 @@ def main():
         help="좌석 구역 (OP, 1F-A, 1F-B, 1F-C, 2F-A, 2F-B, 2F-C, any)",
     )
     booking_group.add_argument(
-        "--seat-count", type=int, default=2,
-        help="예매 매수 1~2 (기본: 2)",
+        "--seat-count", type=int, default=1,
+        help="예매 매수 고정 1매",
     )
     booking_group.add_argument(
         "--seat-count-mode", default="random",
         choices=["random", "fixed"],
-        help="좌석 매수 선택 방식 (random=매 run마다 1~2 랜덤, fixed=--seat-count 고정)",
+        help="좌석 매수 선택 방식 (현재 버전은 항상 1매로 고정)",
     )
     booking_group.add_argument(
         "--pay-method", default="VIRTUAL_ACCOUNT",
@@ -378,7 +377,7 @@ def main():
     effective_runs = args.behavior_runs if args.behavior_runs is not None else args.runs
     print(f"  반복: {effective_runs}회")
     print(f"  공연: showId={args.show_id}")
-    seat_count_label = "1~2 랜덤" if args.seat_count_mode == "random" else f"{args.seat_count}매"
+    seat_count_label = "1매 고정"
     print(f"  좌석: {args.seat_grade.upper()} / {args.seat_section.upper()} / {seat_count_label}")
     if args.pay_method == "CARD":
         print(f"  결제: 카드 ({args.card_company})")

@@ -217,7 +217,7 @@ class TruveMacro:
         self.booking = booking_options or {
             "seat_grade": "any",
             "seat_section": "any",
-            "seat_count": 2,
+            "seat_count": 1,
             "pay_method": "CARD",
             "schedule_date": None,
             "schedule_time": None,
