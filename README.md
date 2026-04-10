@@ -237,7 +237,7 @@ python main.py --info
 - `seatmap_mouse_teleport_count`
 - `seatmap_mouse_teleport_rate`
 
-## 발표용 포인트
+## 핵심 포인트
 
 - 이 매크로는 단순 예매 자동화가 아니라 **탐지 모델 학습용 데이터 생성기**입니다.
 - 핵심 차별점은 `bot/human` 행동 분포를 의도적으로 다르게 설계했다는 점입니다.
